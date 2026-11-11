@@ -1,0 +1,127 @@
+# Configuration The Winners
+main_agent:
+  path_lookahead : 2
+  epsilon : 0.05
+  seuil_road_straight: 0.8
+  seuil_distance_stuck : 3
+  default_gain : 7.0
+  seuil_lenpoints : 2
+
+pilot:
+  default_gain : 7.0
+  seuil_lenpoints : 2
+  seuil_distance : 2
+  epsilon : 0.05
+  seuil_road_straight: 0.8
+
+speed:
+  vitesse_seuil : 20.0
+  seuil_decalage_max : 10
+  seuil_decalage_mid : 8
+  seuil_decalage_low : 6
+  seuil_decalage_min : 5
+  acceleration_max : 1.0
+  acceleration_mid : 0.55
+  acceleration_low : 0.3
+  acceleration_czero : 0.05
+  acceleration_drift : 0.6
+  speed_gain : 2.5
+
+steering:
+  empattement : 2.5
+
+powerup_type:
+  radar_xball : 0.8
+  radar_xswatter : 0.4
+  radar_zmin_ball : 2.0
+  radar_zmin_swatter : 2.0
+  radar_zmax_ball : 25.0
+  radar_zmax_swatter : 5.0
+  gain_steer : 7.0
+  steer_allow_zipper : 0.4
+  rate_steer : 0.8
+  rate_target : 0.2
+
+drift:
+  timer_basic : 0
+  cooldown_basic : 0
+  timer_start : 15
+  cooldown_start : 15
+  coefficient_steer : 0.6
+  speed_seuil : 12
+  x_seuil : 3.0
+  steer_seuil : 0.5
+
+banana:
+  dodge_timer_basic : 0
+  dodge_timer_start : 10
+  decalage_lateral : 2.75
+  radar_x : 2.0
+  radar_zmin : 0.0
+  radar_zmax : 17.0
+  seuil_ligne : 2.0
+  default_gain : 7.0
+  adjusted_gain : 10.0
+  seuil_limite_path : 1.5
+  nb_noeuds : 5
+  limite_banane_single : 1.8
+  limite_centre : 1.8
+  limite_courbe : 1.2
+  limite_banane_courbe : 1.8
+  decalage_lateral_courbe : 4.0
+  true_virage : 0.5
+  limite_danger_lateral : 3.5
+
+rescue:
+  recovery_timer : 10
+  seuil_agent_position : 20
+  seuil_distance : 10.0
+  seuil_delta : 3
+  seuil_speed : 0.30
+  seuil_blocked : 14
+  seuil_blocked_trigger : 7
+
+opponent:
+  radar_x : 1.25
+  radar_zmin : 0.1
+  radar_zmax : 12
+  ecart_danger : 0.5
+  securite_nz : 3.5
+  timer : 4
+  duration : 15
+  decalage_lateral : 2.5
+  default_gain : 7.0
+
+nitro:
+  seuil_energy : 0.5
+  seuil_steer : 0.45
+  nb_max_points : 8
+  nb_min_points : 4
+  max_curvature_for_nitro : 1
+
+edge:
+  correction_steer : 0.2
+  epsilon_limite_max : 1.0
+  epsilon_limite_min : 0.05
+  epsilon_gz : 0.01
+  gain : 7.0
+  new_accel : 0.4
+  decalage_lateral : 2.0
+  timer : 3
+  duree : 6
+
+apex:
+  marge_secu : 0.85
+  seuil_prepa : 1.8
+  seuil_apex : 1.25
+  seuil_idle : 0.3
+  timer_prepa : 20
+  timer_apex : 25
+  reduction_decalage : 1.5
+  gain : 7.0
+
+end:
+  seuil_lenpoints : 2
+
+start:
+  seuil_distance : 2

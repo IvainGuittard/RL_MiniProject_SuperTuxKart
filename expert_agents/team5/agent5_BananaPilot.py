@@ -1,0 +1,289 @@
+﻿import numpy as np
+import random
+from utils.track_utils import compute_curvature, compute_slope
+from agents.kart_agent import KartAgent
+
+
+class Agent5Banana(KartAgent):
+    """
+    Agent 'Donkey Bombs Banana'.
+    Ce wrapper est responsable de la détection et de l'évitement des obstacles 
+    (bananes et autres objets fixes) sur la trajectoire du kart, ainsi que du 
+    maintien du kart à l'intérieur des limites de la piste
+    """
+    def __init__(self, env, pilot_agent, conf, path_lookahead=3):
+        """
+        Initialise le module d'évitement avec les paramètres de détection.
+
+        Args:
+            env (obj): L'environnement de simulation
+            pilot_agent (obj): L'agent pilote enveloppé (celui qui gère la conduite de base)
+            conf (OmegaConf): Objet de configuration contenant les seuils d'évitement
+            path_lookahead (int): Nombre de points de cheminement à anticiper
+        """
+        super().__init__(env)
+        self.path_lookahead = path_lookahead
+        self.pilot = pilot_agent
+        self.name = "Donkey Bombs Banana"
+        self.conf = conf
+
+        self.ahead_dist = self.conf.pilot.navigation.lookahead_meters
+        self.lookahead_factor = self.conf.pilot.navigation.lookahead_speed_factor
+        self.lookahead_max = self.conf.pilot.navigation.lookahead_max
+
+
+    def reset(self):
+        """Réinitialise le pilote interne"""
+        self.pilot.reset()
+
+    def position_track(self, obs):
+        """
+        Calcule le point de visée dynamique pour définir la trajectoire théorique
+
+        Args:
+            obs (dict): Les observations courantes du simulateur
+
+        Returns:
+            tuple: (target_x, target_z) représentant les coordonnées du point cible
+        """
+        # La fonction analyse les noeuds devant et renvoie le vecteur (x, z) du point cible situé à une distance dynamique.
+        paths = obs['paths_end']
+
+        if len(paths) == 0:
+            return 0, self.ahead_dist  # par défaut si aucun noeud n'est donné dans la liste paths_end
+
+        # On calcule la vitesse actuelle pour adapter la distance de visée.
+        speed = np.linalg.norm(obs['velocity'])
+
+        # Plus on va vite, plus on regarde loin
+        lookahead = self.ahead_dist + (speed * self.lookahead_factor)
+
+        # On plafonne la visée
+        lookahead = min(lookahead, self.lookahead_max)
+
+        target_vector = paths[-1]  # Par défaut on prend le noeud le plus loin pour éviter tout bug
+
+        # On cherche le premier point qui dépasse notre distance de visée calculée
+        for p in paths:
+            if p[2] > lookahead:
+                target_vector = p
+                break
+
+        # On retourne l'écart latéral x et l'écart avant z du point cible
+        return target_vector[0], target_vector[2]
+
+
+    def position_track_fixe(self, obs):
+        """
+        La fonction retourne un noeud en fonction d'un indice et non pas en fonction d'une distance.
+        """
+
+        speed = np.linalg.norm(obs['velocity'])
+
+        # Plus on est rapide plus on regarde loin (mais on limite quand même au 4ème noeud pour ne pas voir trop loin)
+        lookahead = 2 #min(int(2 + self.conf.pilot.navigation.lookahead_speed_factor * speed), 4)
+
+        paths = obs['paths_start'][lookahead]
+
+
+        # On retourne l'écart latéral x et l'écart avant z du point cible
+        return paths[0], paths[2]
+
+
+
+    # def edge_safety(self, obs):
+    #     """
+    #     Vérifie si le kart s'éloigne trop du centre de la piste et génère une correction
+
+    #     Args:
+    #         obs (dict): Les observations courantes du simulateur
+
+    #     Returns:
+    #         tuple: (edge_detected, steering, acceleration)
+    #             - edge_detected (bool): True si une correction est nécessaire
+    #             - steering (float): Valeur de braquage corrective
+    #             - acceleration (float): Valeur d'accélération ajustée
+    #     """
+    #     dist_center = obs["center_path_distance"]
+
+    #     max_dist = self.conf.banana.edge_safety.max_center_dist
+
+    #     if abs(dist_center) > max_dist:
+
+    #         # Si trop à droite on braquer à gauche
+    #         if dist_center > 0:
+    #             steering = -self.conf.banana.edge_safety.steering_correction
+    #         else:
+    #             steering = self.conf.banana.edge_safety.steering_correction
+
+    #         accel = self.conf.banana.edge_safety.correction_accel
+
+    #         return True, steering, accel
+
+    #     return False, 0.0, 1.0
+
+
+
+    def edge_safety(self, obs):
+        dist_center = obs["center_path_distance"]
+        width_path = obs["paths_width"][0]
+        max_percentage = self.conf.banana.edge_safety.max_border_dist_percentage
+
+        dist_seuil = (width_path / 2) * max_percentage
+
+
+        if abs(dist_center) > dist_seuil:
+            # print(
+            # "DANGER\n",
+            # "center_path_distance=", obs["center_path_distance"],
+            # "path_width=", obs["paths_width"][0]
+            #  )
+            if dist_center > 0:
+                steering = -self.conf.banana.edge_safety.steering_correction
+            else:
+                steering = self.conf.banana.edge_safety.steering_correction
+
+            accel = self.conf.banana.edge_safety.correction_accel
+            return True, steering, accel
+
+        # print(
+        #     "NO DANGER\n",
+        #     "center_path_distance=", obs["center_path_distance"],
+        #     "path_width=", obs["paths_width"][0]
+        # )
+
+        return False, 0.0, 1.0
+
+    def detect_banana_old(self, obs):
+        """
+        Identifie les menaces et calcule une manoeuvre d'esquive perpendiculaire
+
+        Args:
+            obs (dict): Les observations courantes du simulateur
+
+        Returns:
+            tuple: (danger_detected, steering, acceleration)
+                - danger_detected (bool): True si une banane est sur la trajectoire
+                - steering (float): Force de braquage pour éviter l'objet
+                - acceleration (float): Accélération pendant l'esquive
+        """
+        items_pos = np.array(obs["items_position"])
+        items_type = obs["items_type"]
+
+        if items_type is None or len(items_type) == 0:
+            return False, 0.0, 1.0
+
+        index_bananas = [i for i, j in enumerate(items_type) if (j == 1 or j == 4 or j == 5)]
+        bananas = items_pos[index_bananas]
+
+        if len(index_bananas) == 0:
+            return False, 0.0, 1.0
+
+        for b in bananas:
+            x_b = b[0]
+            z_b = b[2]
+
+            if 0 < z_b < self.conf.banana.detection.max_distance and np.abs(x_b) < self.conf.banana.detection.safety_width:
+                # Si la banane est à gauche, on tourne à droite, et inversement
+                if x_b < 0:
+                    steering = self.conf.banana.avoidance.steering_force 
+                else:
+                    steering = -self.conf.banana.avoidance.steering_force
+                accel = self.conf.banana.avoidance.acceleration
+                return True, steering, accel
+
+        return False, 0.0, 1.0
+
+
+    def detect_banana(self, obs):
+        """
+        Identifie les menaces et calcule une manoeuvre d'esquive perpendiculaire
+
+        Args:
+            obs (dict): Les observations courantes du simulateur
+
+        Returns:
+            tuple: (danger_detected, steering, acceleration)
+                - danger_detected (bool): True si une banane est sur la trajectoire
+                - steering (float): Force de braquage pour éviter l'objet
+                - acceleration (float): Accélération pendant l'esquive
+        """
+        items_pos = np.array(obs["items_position"])
+        items_type = obs["items_type"]
+
+        if items_type is None or len(items_type) == 0:
+            return False, 0.0, 1.0
+
+        index_bananas = [i for i, j in enumerate(items_type) if (j == 1 or j == 4 or j == 5)]
+        bananas = items_pos[index_bananas]
+
+        if len(index_bananas) == 0:
+            return False, 0.0, 1.0
+
+        node_x, node_z = self.position_track_fixe(obs)
+
+        denominator = np.sqrt(node_x**2 + node_z**2)
+
+        if denominator < 1e-6:
+            return False, 0.0, 1.0
+
+        for b in bananas:
+            x_b = b[0]
+            z_b = b[2]
+
+            if 0 < z_b < self.conf.banana.detection.max_distance:
+
+                # distance perpendiculaire entre le point de la banane et la droite séparant le kart et le noeud
+                d = abs(node_x * z_b - node_z * x_b) / denominator
+
+                if d < self.conf.banana.detection.safety_width:
+                    # Si la banane est à gauche, on tourne à droite, et inversement
+                    if x_b < 0:
+                        steering = self.conf.banana.avoidance.steering_force 
+                    else:
+                        steering = -self.conf.banana.avoidance.steering_force
+                    accel = self.conf.banana.avoidance.acceleration
+                    return True, steering, accel
+
+        return False, 0.0, 1.0
+
+
+    def choose_action(self, obs):
+        """
+        Sélectionne l'action en fonction des priorités : 1. Bananes, 2. Bordures, 3. Conduite
+
+        Args:
+            obs (dict): Les observations courantes du simulateur
+
+        Returns:
+            dict: Le dictionnaire d'actions final
+        """
+        # Priorité aux évitement de bananes
+        danger, steer, accel = self.detect_banana_old(obs)
+        if danger:
+            return {
+                "acceleration": accel,
+                "steer": steer,
+                "drift": False,
+                "nitro": False,
+                "rescue": False,
+                "brake": False,
+                "fire": False
+            }
+
+        # Ensuite sécurité bordures
+        # Cela nous évite de créer un nouveau wrapper pour l'instant
+        edge, steer, accel = self.edge_safety(obs)
+        if edge:
+            return {
+                "acceleration": accel,
+                "steer": steer,
+                "drift": False,
+                "nitro": False,
+                "rescue": False,
+                "brake": False,
+                "fire": False
+            }
+
+        # Puis enfin Pilot prend le controle 
+        return self.pilot.choose_action(obs)

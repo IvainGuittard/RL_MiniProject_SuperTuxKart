@@ -1,0 +1,50 @@
+acceleration:
+  virage: 1 
+                   #0.9972472427271639
+  virage_moyen: 0.99
+  virage_serré: 0.90 
+  # 0.8261081593205882
+  
+  virage_tres_serré: 0.80 
+  #67896957489046
+  speed: 4.0
+ 
+angle_evite_n: -0.7560262910779454
+angle_evite_p: 0.7560262910779454
+braquage: 0.8374079786428565
+champs_vision:
+  angle: 20.162036738469265
+  dist: 24.514755260973594
+correction: 4.5
+len_nodes: 3
+curvature: 0.5274503214873205
+recovery: 18
+steps: 2
+virages:
+  drift: 0.30
+  moyen:
+    i1: 0.05
+    i2: 0.15
+  serrer:
+    i1: 0.15
+    i2: 0.27
+vitesse: 0.1730058694074001
+
+
+look_limite: 6
+look_droite: 0.65
+look_leger: 0.5
+
+lookahead:
+  droite: 7
+  leger: 5
+  serrer: 3
+  long: 7
+  dist: 20
+
+
+ligne_droite: 0.2
+
+steering : 
+  item_steer: 0.7
+  correction_steer: 0.9
