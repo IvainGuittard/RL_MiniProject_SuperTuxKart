@@ -10,7 +10,7 @@ from .actors import MyWrapper, make_random_actor
 env_name = "supertuxkart/flattened_multidiscrete-v0"
 
 #: Player name (you must change that)
-player_name = "Example"
+player_name = "Ni20"
 
 
 def get_wrappers() -> List[Callable[[gym.Env], gym.Wrapper]]:
