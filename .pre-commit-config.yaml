@@ -1,0 +1,42 @@
+# agent.py is the ML-Arena shim, kept as is
+exclude: ^stk_actor/agent\.py$
+
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: check-yaml
+  - id: end-of-file-fixer
+  - id: trailing-whitespace
+
+- repo: https://github.com/pre-commit/pygrep-hooks
+  rev: v1.10.0
+  hooks:
+  - id: python-check-blanket-noqa
+  - id: python-no-eval
+
+- repo: local
+  hooks:
+  - id: no-fixme-todo
+    name: No FIXME or TODO markers
+    entry: '(FIXME:|TODO:)'
+    language: pygrep
+    types: [python]
+
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.9.6
+  hooks:
+  - id: ruff
+    args: [--fix]
+  - id: ruff-format
+
+- repo: https://github.com/compilerla/conventional-pre-commit
+  rev: v4.3.0
+  hooks:
+  - id: conventional-pre-commit
+    stages:
+    - commit-msg
