@@ -4,22 +4,24 @@ Uses supertuxkart/full-v0 directly — no ConstantSizedObservations or
 PolarObservations dependency.  Variable-length path sequences are padded here,
 so num_kart=1 works without hitting the installed-wrapper np.stack crash.
 
-Observation (flat float32, OBS_DIM = 11 + N_PATHS * 7):
+Observation (flat float32, OBS_DIM = 12 + N_PATHS * 7):
   velocity              3   kart velocity in world frame
   distance_down_track   1   progress along track
   center_path_distance  1   lateral offset from track centre
   front                 3   kart heading direction
   center_path           3   nearest track-centre position
+  energy                1   remaining nitro energy
   paths_start      N×3     upcoming track-node start positions (padded)
   paths_end        N×3     upcoming track-node end positions
   paths_width      N×1     upcoming track-node widths
 
-Action (5 dims, all in [-1, 1]):
+Action (6 dims, all in [-1, 1]):
   0  acceleration   mapped to [0, 1] by (x+1)/2
   1  steer          kept in [-1, 1]
   2  brake          x > 0 → 1, else 0
   3  drift          x > 0 → 1, else 0
   4  nitro          x > 0 → 1, else 0
+  5  rescue         x > 0 → 1, else 0
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from rl_mind.core import Action
 
 
 N_PATHS = 5                     # lookahead track nodes
-OBS_DIM = 11 + N_PATHS * 7     # 46 with N_PATHS=5
+OBS_DIM = 12 + N_PATHS * 7     # 47 with N_PATHS=5
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,7 @@ def obs_to_flat(obs: dict) -> np.ndarray:
         np.asarray(obs["center_path_distance"], dtype=np.float32).flatten(),  # 1
         np.asarray(obs["front"],                dtype=np.float32).flatten(),  # 3
         np.asarray(obs["center_path"],          dtype=np.float32).flatten(),  # 3
+        np.asarray(obs["energy"],               dtype=np.float32).flatten(),  # 1
         _pad_sequence(obs["paths_start"], N_PATHS, 3),                        # N*3
         _pad_sequence(obs["paths_end"],   N_PATHS, 3),                        # N*3
         _pad_sequence(obs["paths_width"], N_PATHS, 1),                        # N*1
@@ -66,20 +69,20 @@ def obs_to_flat(obs: dict) -> np.ndarray:
 
 
 def decode_action(action: np.ndarray) -> dict:
-    """Map a 5-dim float array in [-1, 1] to an STK action dict."""
+    """Map a 6-dim float array in [-1, 1] to an STK action dict."""
     return {
         "acceleration": np.array([(float(action[0]) + 1.0) / 2.0]),
         "steer":        np.array([float(action[1])]),
         "brake":        int(action[2] > 0),
         "drift":        int(action[3] > 0),
         "nitro":        int(action[4] > 0),
-        "rescue":       0,
+        "rescue":       int(action[5] > 0),
         "fire":         0,
     }
 
 
 def expert_action_to_flat(action: dict) -> np.ndarray:
-    """Convert an STK dict action to a 5-dim float32 array in [-1, 1]."""
+    """Convert an STK dict action to a 6-dim float32 array in [-1, 1]."""
     accel = float(np.clip(np.asarray(action["acceleration"]).flat[0], 0.0, 1.0))
     steer = float(np.clip(np.asarray(action["steer"]).flat[0], -1.0, 1.0))
     return np.array([
@@ -88,6 +91,7 @@ def expert_action_to_flat(action: dict) -> np.ndarray:
         1.0 if action.get("brake", False) else -1.0,
         1.0 if action.get("drift", False) else -1.0,
         1.0 if action.get("nitro", False) else -1.0,
+        1.0 if action.get("rescue", False) else -1.0,
     ], dtype=np.float32)
 
 
@@ -96,7 +100,7 @@ def expert_action_to_flat(action: dict) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class STKFlatWrapper(gym.Wrapper):
-    """Flat float32 obs (OBS_DIM,) + 5-dim continuous action on full-v0."""
+    """Flat float32 obs (OBS_DIM,) + 6-dim continuous action on full-v0."""
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
@@ -104,7 +108,7 @@ class STKFlatWrapper(gym.Wrapper):
             low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32
         )
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(5,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(6,), dtype=np.float32
         )
         self.raw_obs: dict | None = None
 
