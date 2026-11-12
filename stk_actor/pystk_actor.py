@@ -101,11 +101,10 @@ def _make_network_actor(module_dir: Path) -> Callable:
     """Load the saved SAC/RLPD/DAgger actor from pystk_actor.pth."""
     import torch
     from .sac import SquashedGaussianActor
-    from .stk_bridge import OBS_DIM
+    from .stk_bridge import OBS_DIM, ACTION_DIM
 
     weights_path = module_dir / "pystk_actor.pth"
-    action_dim = 6
-    actor = SquashedGaussianActor(OBS_DIM, (256, 256), action_dim)
+    actor = SquashedGaussianActor(OBS_DIM, (256, 256), ACTION_DIM)
     actor.load_state_dict(torch.load(weights_path, map_location="cpu"))
     actor.eval()
 

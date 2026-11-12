@@ -4,9 +4,8 @@ Uses supertuxkart/full-v0 directly — no ConstantSizedObservations or
 PolarObservations dependency.  Variable-length path sequences are padded here,
 so num_kart=1 works without hitting the installed-wrapper np.stack crash.
 
-Observation (flat float32, OBS_DIM = 12 + N_PATHS * 7):
-  velocity              3   kart velocity in world frame
-  distance_down_track   1   progress along track
+Observation (flat float32, OBS_DIM = 11 + N_PATHS * 7), kart-centric frame:
+  velocity              3   kart velocity
   center_path_distance  1   lateral offset from track centre
   front                 3   kart heading direction
   center_path           3   nearest track-centre position
@@ -15,7 +14,10 @@ Observation (flat float32, OBS_DIM = 12 + N_PATHS * 7):
   paths_end        N×3     upcoming track-node end positions
   paths_width      N×1     upcoming track-node widths
 
-Action (6 dims, all in [-1, 1]):
+distance_down_track is deliberately left out: absolute progress in metres
+means something different on every track and does not help steering.
+
+Action (ACTION_DIM = 6, all in [-1, 1]):
   0  acceleration   mapped to [0, 1] by (x+1)/2
   1  steer          kept in [-1, 1]
   2  brake          x > 0 → 1, else 0
@@ -38,7 +40,8 @@ from rl_mind.core import Action
 
 
 N_PATHS = 5                     # lookahead track nodes
-OBS_DIM = 12 + N_PATHS * 7     # 47 with N_PATHS=5
+OBS_DIM = 11 + N_PATHS * 7     # 46 with N_PATHS=5
+ACTION_DIM = 6                 # accel, steer, brake, drift, nitro, rescue
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +60,6 @@ def obs_to_flat(obs: dict) -> np.ndarray:
     """Convert a full-v0 Dict observation to a flat float32 vector."""
     return np.concatenate([
         np.asarray(obs["velocity"],             dtype=np.float32).flatten(),  # 3
-        np.asarray(obs["distance_down_track"],  dtype=np.float32).flatten(),  # 1
         np.asarray(obs["center_path_distance"], dtype=np.float32).flatten(),  # 1
         np.asarray(obs["front"],                dtype=np.float32).flatten(),  # 3
         np.asarray(obs["center_path"],          dtype=np.float32).flatten(),  # 3
@@ -69,7 +71,7 @@ def obs_to_flat(obs: dict) -> np.ndarray:
 
 
 def decode_action(action: np.ndarray) -> dict:
-    """Map a 6-dim float array in [-1, 1] to an STK action dict."""
+    """Map an ACTION_DIM float array in [-1, 1] to an STK action dict."""
     return {
         "acceleration": np.array([(float(action[0]) + 1.0) / 2.0]),
         "steer":        np.array([float(action[1])]),
@@ -82,7 +84,7 @@ def decode_action(action: np.ndarray) -> dict:
 
 
 def expert_action_to_flat(action: dict) -> np.ndarray:
-    """Convert an STK dict action to a 6-dim float32 array in [-1, 1]."""
+    """Convert an STK dict action to an ACTION_DIM float32 array in [-1, 1]."""
     accel = float(np.clip(np.asarray(action["acceleration"]).flat[0], 0.0, 1.0))
     steer = float(np.clip(np.asarray(action["steer"]).flat[0], -1.0, 1.0))
     return np.array([
@@ -100,7 +102,7 @@ def expert_action_to_flat(action: dict) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class STKFlatWrapper(gym.Wrapper):
-    """Flat float32 obs (OBS_DIM,) + 6-dim continuous action on full-v0."""
+    """Flat float32 obs (OBS_DIM,) + ACTION_DIM continuous action on full-v0."""
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
@@ -108,7 +110,7 @@ class STKFlatWrapper(gym.Wrapper):
             low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32
         )
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(6,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32
         )
         self.raw_obs: dict | None = None
 
@@ -213,7 +215,7 @@ class STKVecEnv:
 def run_expert_lap(env: STKFlatWrapper, expert_cls) -> dict:
     """Run the expert without noise for one episode; return its lap stats.
 
-    The expert executes the same 5-dim actions as the learner (no rescue, no
+    The expert executes the same ACTION_DIM actions as the learner (no rescue, no
     fire), so this is the reference performance of the expert *in the
     learner's action space* (used to normalise scores).
     """

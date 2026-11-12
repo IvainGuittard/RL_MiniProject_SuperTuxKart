@@ -139,7 +139,7 @@ class SACConfig:
     batch_size: int = 256
 
     gamma: float = 0.99
-    tau: float = 0.05
+    tau: float = 0.005
     max_grad_norm: float = 0.5
 
     entropy_mode: str = "auto"
@@ -157,7 +157,8 @@ def run_sac(
     cfg: SACConfig,
     run_dir: str | None = None,
     stk_env=None,       # optional pre-built STKVecEnv; if None, uses cfg.env_name
-) -> Evaluator:
+    make_evaluator=None,  # optional ``writer -> evaluator`` (e.g. TrackSuiteEvaluator)
+):
     torch.manual_seed(cfg.seed)
     env = stk_env if stk_env is not None else VecEnv(cfg.env_name, cfg.n_envs, seed=cfg.seed)
 
@@ -188,13 +189,17 @@ def run_sac(
     writer = SummaryWriter(run_dir)
     # With a custom stk_env we reuse the training env for evaluation (pystk2
     # is a singleton; we cannot create a second independent instance).
-    eval_env = env if stk_env is not None else VecEnv(cfg.env_name, cfg.n_eval_envs, seed=cfg.seed + 100)
-    evaluator = Evaluator(
-        eval_env,
-        every=cfg.eval_interval,
-        run_dir=run_dir,
-        writer=writer,
-    )
+    if make_evaluator is not None:
+        evaluator = make_evaluator(writer)
+    else:
+        eval_env = env if stk_env is not None else VecEnv(cfg.env_name, cfg.n_eval_envs, seed=cfg.seed + 100)
+        evaluator = Evaluator(
+            eval_env,
+            every=cfg.eval_interval,
+            run_dir=run_dir,
+            writer=writer,
+        )
+    eval_shares_env = stk_env is not None
 
     pbar = tqdm(total=cfg.max_steps)
     while collector.steps < cfg.max_steps:
@@ -240,6 +245,10 @@ def run_sac(
         writer.add_scalar("loss/actor", actor_loss.item(), collector.steps)
         writer.add_scalar("entropy_coef", alpha, collector.steps)
         if result := evaluator.run_if_needed(collector.steps, actor):
+            if eval_shares_env:
+                # Evaluation reset the shared env: restart a training episode
+                # rather than store a transition spanning the evaluation.
+                collector._obs = None
             pbar.set_description(
                 f"eval={result.mean:7.1f} best={evaluator.best_reward:7.1f}"
             )

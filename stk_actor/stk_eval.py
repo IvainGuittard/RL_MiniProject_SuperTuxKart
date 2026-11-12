@@ -1,0 +1,167 @@
+"""Evaluation on a fixed suite of tracks (same tracks, same seed, every time).
+
+pystk2 is a per-process singleton, so evaluation runs on the *training* env
+(``STKVecEnv.flat_env``): the track is forced through
+``env.unwrapped.default_track`` for the duration of the evaluation, then put
+back. Since evaluation resets that env, the training loop must restart its
+own episode afterwards (see ``collector._obs = None`` in rlpd.py / sac.py).
+
+Every evaluation runs one deterministic episode per track with
+``reset(seed=seed)``, so two evaluations differ only by the policy.
+"""
+
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass
+from typing import Callable
+
+import numpy as np
+import torch
+from torch.utils.tensorboard import SummaryWriter
+
+from rl_mind.evaluation import EvalResult
+
+from .stk_bridge import STKFlatWrapper, expert_action_to_flat
+
+
+DEFAULT_EVAL_TRACKS = (
+    "zengarden",            #  710 m, short and technical
+    "lighthouse",           #  880 m
+    "hacienda",             # 1167 m
+    "cornfield_crossing",   # 1264 m
+    "scotland",             # 1329 m
+)
+
+# A policy factory is called after each reset (an expert needs the fresh env)
+# and returns ``flat_obs -> ACTION_DIM action in [-1, 1]``.
+PolicyFactory = Callable[[STKFlatWrapper], Callable[[np.ndarray], np.ndarray]]
+
+
+@dataclass(frozen=True)
+class EpisodeStats:
+    track: str
+    ret: float
+    finished: bool
+    steps: int
+
+
+def actor_factory(actor) -> PolicyFactory:
+    """Deterministic behaviour (``actor.act``) of a SquashedGaussianActor."""
+    def factory(env):
+        def policy(obs):
+            with torch.no_grad():
+                obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+                return actor.act(obs_t)[0].numpy()
+        return policy
+    return factory
+
+
+def expert_factory(expert_cls) -> PolicyFactory:
+    """Rule-based expert, executed in the learner's action space."""
+    def factory(env):
+        expert = expert_cls(env)
+        return lambda obs: expert_action_to_flat(expert.choose_action(env.raw_obs))
+    return factory
+
+
+def run_suite(
+    env: STKFlatWrapper,
+    factory: PolicyFactory,
+    tracks=DEFAULT_EVAL_TRACKS,
+    seed: int = 0,
+) -> list[EpisodeStats]:
+    """One deterministic episode per track; restores the env's track setting."""
+    unwrapped = env.unwrapped
+    saved_track = unwrapped.default_track
+    stats = []
+    try:
+        for track in tracks:
+            unwrapped.default_track = track
+            obs, _ = env.reset(seed=seed)
+            policy = factory(env)
+            ret, steps, done, terminated = 0.0, 0, False, False
+            while not done:
+                obs, reward, terminated, truncated, _ = env.step(policy(obs))
+                ret += float(reward)
+                steps += 1
+                done = terminated or truncated
+            stats.append(EpisodeStats(track, ret, bool(terminated), steps))
+    finally:
+        unwrapped.default_track = saved_track
+    return stats
+
+
+class TrackSuiteEvaluator:
+    """Drop-in replacement for rl_mind's Evaluator, on a fixed track suite.
+
+    Keeps ``history``, ``best_actor`` and ``best_reward`` like the original,
+    and logs to TensorBoard:
+
+    - ``eval/reward``: mean return over the suite (what best_actor is chosen on)
+    - ``eval/finished``: fraction of tracks where the lap was completed
+    - ``eval_track/<track>``: return on each track
+    """
+
+    def __init__(
+        self,
+        env: STKFlatWrapper,
+        every: int,
+        tracks=DEFAULT_EVAL_TRACKS,
+        seed: int = 0,
+        writer: SummaryWriter | None = None,
+    ):
+        self.env = env
+        self.every = every
+        self.tracks = tuple(tracks)
+        self.seed = seed
+        self.writer = writer
+        self.history: list[EvalResult] = []
+        self.best_actor = None
+        self.best_reward = -float("inf")
+        self._last_eval_step = 0
+
+    def run(self, actor) -> list[EpisodeStats]:
+        return run_suite(self.env, actor_factory(actor), self.tracks, self.seed)
+
+    def run_if_needed(self, steps: int, actor) -> EvalResult | None:
+        if steps - self._last_eval_step < self.every:
+            return None
+        self._last_eval_step = steps
+
+        stats = self.run(actor)
+        rewards = torch.tensor([s.ret for s in stats])
+        mean = float(rewards.mean())
+        is_best = mean > self.best_reward
+        if is_best:
+            self.best_reward = mean
+            self.best_actor = copy.deepcopy(actor)
+
+        result = EvalResult(step=steps, rewards=rewards, is_best=is_best)
+        self.history.append(result)
+        if self.writer is not None:
+            self.writer.add_scalar("eval/reward", mean, steps)
+            self.writer.add_scalar(
+                "eval/finished", float(np.mean([s.finished for s in stats])), steps
+            )
+            for s in stats:
+                self.writer.add_scalar(f"eval_track/{s.track}", s.ret, steps)
+        return result
+
+
+def format_table(results: dict[str, list[EpisodeStats]]) -> str:
+    """Rows = policies, columns = tracks (return, * = lap finished)."""
+    names = list(results)
+    tracks = [s.track for s in results[names[0]]]
+    w = max(len(n) for n in names) + 2
+    header = "policy".ljust(w) + "".join(t[:12].rjust(13) for t in tracks)
+    header += "mean".rjust(9) + "finished".rjust(10)
+    lines = [header, "-" * len(header)]
+    for name in names:
+        stats = results[name]
+        row = name.ljust(w)
+        row += "".join(f"{s.ret:8.1f}{'*' if s.finished else ' '}".rjust(13) for s in stats)
+        row += f"{np.mean([s.ret for s in stats]):9.1f}"
+        row += f"{sum(s.finished for s in stats):>6d}/{len(stats)}"
+        lines.append(row)
+    return "\n".join(lines)
