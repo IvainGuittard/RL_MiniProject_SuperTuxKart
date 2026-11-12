@@ -4,7 +4,6 @@
 """
 
 import argparse
-import csv
 import importlib
 import json
 import sys
@@ -14,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 from .sac import SquashedGaussianActor
 from .stk_bridge import (
@@ -95,14 +95,15 @@ def run_dagger(cfg, env, dataset, expert_cls, run_dir):
             optimizer.step()
         return loss.item()
 
-    log_file = open(run_dir / "eval.csv", "w", newline="")
-    log = csv.writer(log_file)
-    log.writerow(["env_steps", "expert_queries", "iteration", "loss", "finished", "lap_steps", "progress"])
+    writer = SummaryWriter(run_dir)
 
     def evaluate_and_log(env_steps, iteration, loss):
         res = evaluate(env, actor)
-        log.writerow([env_steps, env_steps, iteration, loss, *res.values()])
-        log_file.flush()
+        for key, value in res.items():
+            writer.add_scalar(f"eval/{key}", float(value), env_steps)
+        writer.add_scalar("dagger/expert_queries", env_steps, env_steps)
+        writer.add_scalar("dagger/iteration", iteration, env_steps)
+        writer.flush()
         print(f"[dagger] env_steps={env_steps} iter={iteration} loss={loss:.4f} {res}", flush=True)
 
     evaluate_and_log(0, 0, train(cfg.initial_grad_steps))
@@ -127,13 +128,16 @@ def run_dagger(cfg, env, dataset, expert_cls, run_dir):
         data_obs.append(torch.from_numpy(np.stack(new_obs)))
         data_act.append(torch.from_numpy(np.stack(new_act)))
         loss = train(cfg.grad_steps_per_iter)
+        writer.add_scalar("loss/bc", loss, env_steps)
+        writer.add_scalar("dagger/beta", beta, env_steps)
+        writer.add_scalar("dagger/dataset_size", sum(len(o) for o in data_obs), env_steps)
 
         if env_steps - last_eval >= cfg.eval_interval or env_steps >= cfg.max_steps:
             evaluate_and_log(env_steps, iteration, loss)
             last_eval, done = env_steps, True  # the evaluation reset the env
 
-    log_file.close()
-    torch.save(actor.state_dict(), run_dir / "actor.pt")  # last actor, not the best
+    writer.close()
+    torch.save(actor.state_dict(), run_dir / "actor.pt")  # last actor (not the best)
     return actor
 
 
