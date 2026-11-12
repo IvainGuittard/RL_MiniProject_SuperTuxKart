@@ -14,7 +14,7 @@ import gymnasium as gym
 # trained SAC/RLPD/DAgger actor loaded from pystk_actor.pth.
 # ---------------------------------------------------------------------------
 MODE = "expert"
-EXPERT_NAME = "team1"   # team1 .. team5
+EXPERT_NAME = "team5"   # team1 .. team5
 
 # Full-v0 gives Dict obs in cartesian coords — what the expert agents expect.
 # Our STKFlatWrapper is added in get_wrappers() when MODE == "network".
@@ -104,7 +104,7 @@ def _make_network_actor(module_dir: Path) -> Callable:
     from .stk_bridge import OBS_DIM
 
     weights_path = module_dir / "pystk_actor.pth"
-    action_dim = 5
+    action_dim = 6
     actor = SquashedGaussianActor(OBS_DIM, (256, 256), action_dim)
     actor.load_state_dict(torch.load(weights_path, map_location="cpu"))
     actor.eval()

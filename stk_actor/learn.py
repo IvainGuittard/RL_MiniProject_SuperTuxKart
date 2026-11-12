@@ -7,8 +7,8 @@ rlpd   — collect expert data, then train RLPD (SAC + offline expert buffer)
 
 Run from the repository root:
 
-    PYTHONPATH=expert python -m stk_actor.learn sac
-    PYTHONPATH=expert python -m stk_actor.learn rlpd --expert team1 --offline-steps 50000
+    PYTHONPATH=. python -m stk_actor.learn sac
+    PYTHONPATH=. python -m stk_actor.learn rlpd --expert team3 --offline-steps 50000
 """
 
 import argparse
@@ -48,20 +48,22 @@ def cmd_sac(args: argparse.Namespace) -> None:
 
 def cmd_rlpd(args: argparse.Namespace) -> None:
     from .rlpd import RLPDConfig, run_rlpd
-    from .stk_bridge import STKVecEnv, collect_expert_data
+    from .stk_bridge import STKVecEnv, collect_expert_dataset, dataset_to_buffer
 
     expert_cls = _resolve_expert(args.expert)
 
+    # Create the training env first — pystk2 is a per-process singleton, so
+    # we reuse its flat_env for expert collection rather than opening two instances.
+    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
+
     print(f"Collecting {args.offline_steps} expert steps from {args.expert}…")
-    offline_buffer = collect_expert_data(
+    dataset = collect_expert_dataset(
+        env.flat_env,
         expert_cls,
         n_steps=args.offline_steps,
-        track=args.track,
-        num_kart=args.num_kart,
     )
+    offline_buffer = dataset_to_buffer(dataset)
     print(f"Offline buffer ready: {len(offline_buffer)} transitions.")
-
-    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
 
     cfg = RLPDConfig(
         env_name="stk",

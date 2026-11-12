@@ -1,8 +1,6 @@
-"""SAC implementation.
+"""SAC implementation. Run via learn.py:
 
-Run from the repository root:
-
-    PYTHONPATH=expert python -m stk_actor.sac
+    PYTHONPATH=. python -m stk_actor.learn sac
 """
 
 import copy
@@ -128,7 +126,7 @@ def compute_actor_loss(
 
 @dataclass(frozen=True)
 class SACConfig:
-    env_name: str = "CartPoleContinuous-v1"
+    env_name: str = "stk"
     seed: int = 1
 
     max_steps: int = 300_000
@@ -250,6 +248,3 @@ def run_sac(
     return evaluator
 
 
-if __name__ == "__main__":
-    import rl_mind.envs
-    run_sac(SACConfig())
