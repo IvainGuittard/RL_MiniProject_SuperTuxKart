@@ -23,10 +23,9 @@ player_name = "Ni20"
 
 
 def get_wrappers() -> List[Callable[[gym.Env], gym.Wrapper]]:
-    if MODE == "network":
-        from .stk_bridge import STKFlatWrapper
-        return [STKFlatWrapper]
-    return []  # expert reads raw Dict obs directly
+    # No wrapper: pystk2 race only accepts observation/action wrappers, so the
+    # network actor flattens the obs and decodes its action itself
+    return []
 
 
 def create_state():
@@ -111,7 +110,8 @@ def _make_network_actor(module_dir: Path) -> Callable:
 
     def act(state, obs):
         import numpy as np
-        obs_t = torch.from_numpy(np.asarray(obs, dtype="float32")).unsqueeze(0)
+        from .stk_bridge import obs_to_flat
+        obs_t = torch.from_numpy(obs_to_flat(obs)).unsqueeze(0)
         with torch.no_grad():
             action_t = actor.act(obs_t)
         from .stk_bridge import decode_action
