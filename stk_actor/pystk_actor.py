@@ -1,52 +1,35 @@
+"""Race actor for the CLI runner (PYTHONPATH=. pystk2 race --hide stk_actor).
+
+Switch between EXPERT and NETWORK by changing the MODE variable below.
+"""
+
+import sys
 from pathlib import Path
 from typing import Callable, List
 
 import gymnasium as gym
 
-# IMPORTANT: use relative imports within your module
-from .actors import MyWrapper, make_random_actor
+# ---------------------------------------------------------------------------
+# MODE: "expert" to run a rule-based expert agent, "network" to run the
+# trained SAC/RLPD/DAgger actor loaded from pystk_actor.pth.
+# ---------------------------------------------------------------------------
+MODE = "expert"
+EXPERT_NAME = "team1"   # team1 .. team5
 
-#: The base environment name (you can change that)
-env_name = "supertuxkart/flattened_multidiscrete-v0"
-
-#: Player name (you must change that)
+# Full-v0 gives Dict obs in cartesian coords — what the expert agents expect.
+# Our STKFlatWrapper is added in get_wrappers() when MODE == "network".
+env_name = "supertuxkart/full-v0"
 player_name = "Ni20"
 
 
 def get_wrappers() -> List[Callable[[gym.Env], gym.Wrapper]]:
-    """Returns a list of additional wrappers to be applied to the base
-    environment."""
-    return [
-        # Example of a custom wrapper
-        lambda env: MyWrapper(env, option="1")
-    ]
-
-
-# --- Agent state ---
-#
-# ``create_state()`` is called once at the start of each race. The returned
-# value is passed as the *first* argument to the actor on every step.
-#
-# Return ``None`` if your agent does not need persistent state (stateless).
-# Return a dict (or any object) if your agent needs to track information
-# across steps (e.g. a recurrent model, a history buffer, or a step counter).
+    if MODE == "network":
+        from .stk_bridge import STKFlatWrapper
+        return [STKFlatWrapper]
+    return []  # expert reads raw Dict obs directly
 
 
 def create_state():
-    """Return a fresh state object for a new race.
-
-    Called once at the beginning of each race. The returned value is
-    passed as the first argument to the actor callable on every step.
-
-    Return ``None`` for a stateless agent, or a dict/object for a
-    stateful one. Examples::
-
-        # Stateless:
-        return None
-
-        # Stateful:
-        return {"step": 0, "history": []}
-    """
     return None
 
 
@@ -55,18 +38,83 @@ def get_actor(
     observation_space: gym.spaces.Space,
     action_space: gym.spaces.Space,
 ) -> Callable:
-    """Create an actor callable for gameplay.
+    if MODE == "expert":
+        return _make_expert_actor(module_dir)
+    else:
+        return _make_network_actor(module_dir)
 
-    :param module_dir: Path to the directory containing this file
-        (use it to load weights, e.g. ``module_dir / "pystk_actor.pth"``)
-    :param observation_space: The (wrapped) observation space
-    :param action_space: The (wrapped) action space
-    :return: A callable ``actor(state, obs) -> action``. The *state*
-        argument is whatever ``create_state()`` returned (may be ``None``).
+
+# ---------------------------------------------------------------------------
+# Expert actor
+# ---------------------------------------------------------------------------
+
+def _make_expert_actor(module_dir: Path) -> Callable:
+    """Load the requested expert agent and return an actor callable.
+
+    The CLI runner calls actor(state, obs) with a Dict obs from full-v0.
+    Expert agents only need that Dict in choose_action(); the env reference
+    they store is used for world-state logging (KartAgent.step), not for
+    action selection.  We pass a lightweight stub so the constructor succeeds.
     """
+    # Ensure expert/ is on the path (pre-import pystk2_gymnasium first so the
+    # local expert/pystk2_gymnasium/ folder does not shadow the venv copy).
+    import pystk2_gymnasium  # noqa: F401 — cache installed version first
+    expert_dir = str(module_dir.parent / "expert")
+    if expert_dir not in sys.path:
+        sys.path.insert(0, expert_dir)
 
-    # --- Stateless example (create_state returns None) ---
-    return make_random_actor(observation_space, action_space)
+    _table = {
+        "team1": ("agents.team1.agent1", "Agent1"),
+        "team2": ("agents.team2.agent2", "Agent2"),
+        "team3": ("agents.team3.agent3", "Agent3"),
+        "team4": ("agents.team4.agent4", "Agent4"),
+        "team5": ("agents.team5.agent5", "Agent5"),
+    }
+    module_name, cls_name = _table[EXPERT_NAME]
+    import importlib
+    cls = getattr(importlib.import_module(module_name), cls_name)
 
-    # --- Stateful example (change create_state to return a dict) ---
-    # return make_stateful_actor(module_dir, observation_space, action_space)
+    # Stub env: satisfies the constructor without a live pystk2 instance.
+    # (Nested classes can't reference their outer class, so define flat.)
+    class _Kart:
+        location = [0.0, 0.0, 0.0]
+    class _World:
+        karts = [_Kart()]
+    class _Unwrapped:
+        world = _World()
+    class _StubEnv:
+        unwrapped = _Unwrapped()
+
+    expert = cls(_StubEnv())
+
+    def actor(state, obs):
+        return expert.choose_action(obs)
+
+    return actor
+
+
+# ---------------------------------------------------------------------------
+# Network actor
+# ---------------------------------------------------------------------------
+
+def _make_network_actor(module_dir: Path) -> Callable:
+    """Load the saved SAC/RLPD/DAgger actor from pystk_actor.pth."""
+    import torch
+    from .sac import SquashedGaussianActor
+    from .stk_bridge import OBS_DIM
+
+    weights_path = module_dir / "pystk_actor.pth"
+    action_dim = 5
+    actor = SquashedGaussianActor(OBS_DIM, (256, 256), action_dim)
+    actor.load_state_dict(torch.load(weights_path, map_location="cpu"))
+    actor.eval()
+
+    def act(state, obs):
+        import numpy as np
+        obs_t = torch.from_numpy(np.asarray(obs, dtype="float32")).unsqueeze(0)
+        with torch.no_grad():
+            action_t = actor.act(obs_t)
+        from .stk_bridge import decode_action
+        return decode_action(action_t[0].numpy())
+
+    return act

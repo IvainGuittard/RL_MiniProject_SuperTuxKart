@@ -18,7 +18,7 @@ from pathlib import Path
 
 def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--track", default=None, help="Track name (default: random)")
-    p.add_argument("--num-kart", type=int, default=3)
+    p.add_argument("--num-kart", type=int, default=1)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-steps", type=int, default=300_000)
     p.add_argument("--run-dir", default=None, help="TensorBoard / checkpoint directory")
