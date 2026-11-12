@@ -57,6 +57,9 @@ class AgentItems(KartAgent) :
         current_item = obs["powerup_type"]
         action["fire"] = False
 
+        if not obs["karts_position"]:
+            return action
+
         if (self.last_action) :
             self.last_action = False
             action["fire"] = False
