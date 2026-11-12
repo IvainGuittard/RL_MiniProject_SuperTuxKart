@@ -29,9 +29,9 @@ class Agent1(KartAgent):
         self.conf = OmegaConf.load(path_conf)                           #Importation du fichier de configuration
         
         if dist is not None:
-        	self.conf.dist = dist
+            self.conf.dist = dist
         if ajust is not None:
-        	self.conf.ajust = ajust
+            self.conf.ajust = ajust
         
         self.agentCenter = AgentCenter(env, self.conf, self.path_lookahead)
         self.agentSpeed = AgentSpeed(env, self.conf, self.agentCenter, self.path_lookahead)
