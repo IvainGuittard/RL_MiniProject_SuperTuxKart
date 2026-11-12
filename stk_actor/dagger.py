@@ -33,16 +33,16 @@ EXPERTS = {
 @dataclass(frozen=True)
 class DAggerConfig:
     seed: int = 1
-    max_steps: int = 300_000          # online env steps (same budget as RLPD)
+    max_steps: int = 300_000
     steps_per_iter: int = 2_000
     beta0: float = 0.5                # beta_i = beta0 * beta_decay ** (i - 1)
     beta_decay: float = 0.5
-    initial_grad_steps: int = 5_000   # behaviour cloning on the expert dataset
+    initial_grad_steps: int = 5_000
     grad_steps_per_iter: int = 1_000
     batch_size: int = 256
     lr: float = 3e-4
     max_grad_norm: float = 0.5
-    actor_hidden: tuple = (256, 256)  # same network as SAC / RLPD
+    actor_hidden: tuple = (256, 256)
     eval_interval: int = 5_000
 
 
