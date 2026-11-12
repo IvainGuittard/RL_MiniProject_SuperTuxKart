@@ -113,6 +113,16 @@ PYTHONPATH=. PYTHON -m stk_actor.learn
 
 This should create the `pystk_actor.pth` file (**don't change its name**) that contains the parameters of your model. Load it in `get_actor` using `module_dir / "pystk_actor.pth"`.
 
+### DAgger
+
+To train DAgger : 
+
+```sh
+uv run python -m stk_actor.dagger --expert team3 --track lighthouse --seed 1
+```
+
+The expert dataset is collected once into `data/` (shared with RLPD). The last actor and the TensorBoard logs go to `runs/dagger/<track>/seed<seed>/` (`uv run tensorboard --logdir runs`).
+
 ## Testing the actor
 
 To test your agent locally:
