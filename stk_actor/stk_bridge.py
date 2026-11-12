@@ -73,13 +73,15 @@ def decode_action(action: np.ndarray) -> dict:
         "brake":        int(action[2] > 0),
         "drift":        int(action[3] > 0),
         "nitro":        int(action[4] > 0),
+        "rescue":       0,
+        "fire":         0,
     }
 
 
 def expert_action_to_flat(action: dict) -> np.ndarray:
     """Convert an STK dict action to a 5-dim float32 array in [-1, 1]."""
-    accel = float(np.asarray(action["acceleration"]).flat[0])
-    steer = float(np.asarray(action["steer"]).flat[0])
+    accel = float(np.clip(np.asarray(action["acceleration"]).flat[0], 0.0, 1.0))
+    steer = float(np.clip(np.asarray(action["steer"]).flat[0], -1.0, 1.0))
     return np.array([
         2.0 * accel - 1.0,
         steer,
@@ -104,13 +106,25 @@ class STKFlatWrapper(gym.Wrapper):
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(5,), dtype=np.float32
         )
+        self.raw_obs: dict | None = None
+
+    @property
+    def track_length(self) -> float:
+        """Length of the current track (available after reset)."""
+        return float(self.env.unwrapped.track.length)
+
+    @property
+    def max_episode_steps(self) -> int:
+        return int(self.env.spec.max_episode_steps)
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+        self.raw_obs = obs
         return obs_to_flat(obs), info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(decode_action(action))
+        self.raw_obs = obs
         return obs_to_flat(obs), reward, terminated, truncated, info
 
 
@@ -141,6 +155,12 @@ class STKVecEnv:
         self._seed = seed
         self.observation_space: spaces.Box = self._env.observation_space
         self.action_space: spaces.Box = self._env.action_space
+
+    @property
+    def flat_env(self) -> STKFlatWrapper:
+        """The underlying (single) gymnasium env, shared by training,
+        expert data collection and evaluation (pystk2 is a singleton)."""
+        return self._env
 
     @property
     def observation_dim(self) -> int:
@@ -183,55 +203,117 @@ class STKVecEnv:
 
 
 # ---------------------------------------------------------------------------
-# Expert data collection (RLPD offline buffer)
+# Expert dataset (shared by RLPD and DAgger)
 # ---------------------------------------------------------------------------
 
-def collect_expert_data(
-    agent_cls,
-    n_steps: int,
-    track: str | None = None,
-    num_kart: int = 1,
-    **agent_kwargs,
-) -> ReplayBuffer:
-    """Run a KartAgent expert for n_steps, return a populated ReplayBuffer.
+def run_expert_lap(env: STKFlatWrapper, expert_cls) -> dict:
+    """Run the expert without noise for one episode; return its lap stats.
 
-    The expert receives raw full-v0 Dict observations (cartesian coords,
-    variable-length sequences) which is what the expert agents expect.
-    The buffer stores flat obs and 5-dim actions matching the training env,
-    so it can be passed directly to run_rlpd() as offline_buffer.
+    The expert executes the same 5-dim actions as the learner (no rescue, no
+    fire), so this is the reference performance of the expert *in the
+    learner's action space* (used to normalise scores).
     """
-    import pystk2_gymnasium  # noqa: F401 — registers envs
+    env.reset()
+    expert = expert_cls(env)
+    steps, ret, done = 0, 0.0, False
+    terminated = False
+    while not done:
+        action = expert_action_to_flat(expert.choose_action(env.raw_obs))
+        _, reward, terminated, truncated, _ = env.step(action)
+        steps += 1
+        ret += float(reward)
+        done = terminated or truncated
+    return {"finished": bool(terminated), "steps": steps, "return": ret}
 
-    env = gym.make("supertuxkart/full-v0", track=track, num_kart=num_kart, render_mode=None)
-    expert = agent_cls(env, **agent_kwargs)
-    buffer = ReplayBuffer(n_steps)
 
-    obs_dict, _ = env.reset()
-    expert.obs = obs_dict
-    expert.agent_positions = []
+def collect_expert_dataset(
+    env: STKFlatWrapper,
+    expert_cls,
+    n_steps: int,
+    noise_std: float = 0.2,
+    seed: int = 0,
+) -> dict:
+    """Run the expert for ``n_steps`` steps and return the dataset.
 
-    collected = 0
-    while collected < n_steps:
-        flat_obs = obs_to_flat(obs_dict)
-        action_dict = expert.choose_action(obs_dict)
-        flat_action = expert_action_to_flat(action_dict)
+    Since the environment is deterministic, a noiseless expert would replay
+    the same lap over and over. Gaussian noise of std ``noise_std`` is
+    therefore added to the executed acceleration and steering, to cover the
+    states around the expert trajectory.
 
-        next_obs_dict, reward, terminated, truncated, _ = env.step(action_dict)
+    Two actions are stored for every state:
 
-        buffer.add(Transitions(
-            obs=torch.from_numpy(flat_obs).unsqueeze(0),
-            action=Action(value=torch.from_numpy(flat_action).unsqueeze(0)),
-            reward=torch.tensor([float(reward)], dtype=torch.float32),
-            next_obs=torch.from_numpy(obs_to_flat(next_obs_dict)).unsqueeze(0),
-            terminated=torch.tensor([terminated], dtype=torch.bool),
-        ))
-        collected += 1
+    - ``action``: the action actually executed (noisy), which produced
+      ``reward`` / ``next_obs`` (what RLPD's offline buffer needs);
+    - ``expert_action``: the clean expert action in that state (the label
+      DAgger / behaviour cloning learns from).
 
-        obs_dict = next_obs_dict
+    :returns: A dict of tensors (``obs``, ``action``, ``expert_action``,
+        ``reward``, ``next_obs``, ``terminated``) and a ``meta`` dict.
+    """
+    rng = np.random.default_rng(seed)
+    obs_l, act_l, exp_l, rew_l, next_l, term_l = [], [], [], [], [], []
+    episodes = []
+
+    obs, _ = env.reset()
+    expert = expert_cls(env)
+    ep_steps, ep_return = 0, 0.0
+    for _ in range(n_steps):
+        expert_action = expert_action_to_flat(expert.choose_action(env.raw_obs))
+        action = expert_action.copy()
+        if noise_std > 0:
+            action[:2] = np.clip(action[:2] + rng.normal(0.0, noise_std, 2), -1.0, 1.0)
+
+        next_obs, reward, terminated, truncated, _ = env.step(action)
+        obs_l.append(obs)
+        act_l.append(action)
+        exp_l.append(expert_action)
+        rew_l.append(float(reward))
+        next_l.append(next_obs)
+        term_l.append(bool(terminated))
+        ep_steps += 1
+        ep_return += float(reward)
+
+        obs = next_obs
         if terminated or truncated:
-            obs_dict, _ = env.reset()
-            expert.obs = obs_dict
-            expert.agent_positions = []
+            episodes.append({"finished": bool(terminated), "steps": ep_steps, "return": ep_return})
+            obs, _ = env.reset()
+            expert = expert_cls(env)
+            ep_steps, ep_return = 0, 0.0
 
-    env.close()
+    return {
+        "obs": torch.from_numpy(np.stack(obs_l)),
+        "action": torch.from_numpy(np.stack(act_l)),
+        "expert_action": torch.from_numpy(np.stack(exp_l)),
+        "reward": torch.tensor(rew_l, dtype=torch.float32),
+        "next_obs": torch.from_numpy(np.stack(next_l)),
+        "terminated": torch.tensor(term_l, dtype=torch.bool),
+        "meta": {
+            "n_steps": n_steps,
+            "noise_std": noise_std,
+            "seed": seed,
+            "episodes": episodes,
+        },
+    }
+
+
+def save_dataset(dataset: dict, path) -> None:
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(dataset, path)
+
+
+def load_dataset(path) -> dict:
+    return torch.load(path, weights_only=False)
+
+
+def dataset_to_buffer(dataset: dict) -> ReplayBuffer:
+    """The offline ReplayBuffer of RLPD (executed actions and rewards)."""
+    buffer = ReplayBuffer(len(dataset["obs"]))
+    buffer.add(Transitions(
+        obs=dataset["obs"],
+        action=Action(value=dataset["action"]),
+        reward=dataset["reward"],
+        next_obs=dataset["next_obs"],
+        terminated=dataset["terminated"],
+    ))
     return buffer
