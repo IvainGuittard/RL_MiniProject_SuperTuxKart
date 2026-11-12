@@ -35,7 +35,7 @@ class DAggerConfig:
     seed: int = 1
     max_steps: int = 300_000
     steps_per_iter: int = 2_000
-    beta0: float = 0.5                # beta_i = beta0 * beta_decay ** (i - 1)
+    beta0: float = 0.5 
     beta_decay: float = 0.5
     initial_grad_steps: int = 5_000
     grad_steps_per_iter: int = 1_000
@@ -47,8 +47,8 @@ class DAggerConfig:
 
 
 def resolve_expert(name):
-    import pystk2_gymnasium  # noqa: F401  installed copy before expert/pystk2_gymnasium
-    sys.path.append(str(ROOT / "expert"))  # append, never prepend
+    import pystk2_gymnasium
+    sys.path.append(str(ROOT / "expert"))
     module, cls = EXPERTS[name]
     return getattr(importlib.import_module(module), cls)
 
@@ -82,7 +82,7 @@ def run_dagger(cfg, env, dataset, expert_cls, run_dir):
     rng = np.random.default_rng(cfg.seed)
     actor = SquashedGaussianActor(dataset["obs"].shape[1], cfg.actor_hidden, dataset["expert_action"].shape[1])
     optimizer = torch.optim.Adam(actor.parameters(), lr=cfg.lr)
-    data_obs, data_act = [dataset["obs"]], [dataset["expert_action"]]  # aggregated dataset D
+    data_obs, data_act = [dataset["obs"]], [dataset["expert_action"]]
 
     def train(n_steps):
         obs, target = torch.cat(data_obs), torch.cat(data_act)
@@ -114,7 +114,7 @@ def run_dagger(cfg, env, dataset, expert_cls, run_dir):
         for _ in range(min(cfg.steps_per_iter, cfg.max_steps - env_steps)):
             if done:
                 obs, _ = env.reset()
-                expert = expert_cls(env)  # experts keep per-episode state
+                expert = expert_cls(env)
             label = expert_action_to_flat(expert.choose_action(env.raw_obs))
             new_obs.append(obs)
             new_act.append(label)
@@ -149,8 +149,7 @@ def main():
 
     cfg = DAggerConfig(seed=args.seed, max_steps=args.max_steps)
     expert_cls = resolve_expert(args.expert)
-    env = STKVecEnv(track=args.track, num_kart=1, seed=args.seed).flat_env  # one pystk2 per process
-
+    env = STKVecEnv(track=args.track, num_kart=1, seed=args.seed).flat_env
     # Expert dataset, shared with RLPD: collected once, then reloaded
     path = ROOT / "data" / f"expert_{args.expert}_{args.track}_{args.dataset_steps}_noise{args.dataset_noise}.pt"
     if path.exists():
