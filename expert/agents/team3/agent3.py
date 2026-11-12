@@ -8,7 +8,7 @@ from agents.team3.Rescue import Rescue
 class Agent3(KartAgent):
     def __init__(self, env, path_lookahead=3):
         super().__init__(env)
-        self.track = env.default_track
+        self.track = getattr(getattr(env, "unwrapped", env), "current_track", None)
         self.agent_positions = []
         self.obs = None
         self.isEnd = False

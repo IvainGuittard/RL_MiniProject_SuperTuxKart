@@ -1,3 +1,4 @@
+from pathlib import Path
 ## @file    rival_attack.py
 #  @brief   Module de décision de tir sur les karts adversaires.
 #  @author  Équipe 2 DemoPilote: Mariam Abd El Moneim, Sokhna Oumou Diouf, Ayse Koseoglu, Leon Mantani, Selma Moumou, Maty Niang
@@ -5,7 +6,7 @@
 
 import numpy as np
 from omegaconf import OmegaConf
-cfg = OmegaConf.load("../agents/team2/configDemoPilote.yaml")
+cfg = OmegaConf.load(Path(__file__).resolve().parent / "configDemoPilote.yaml")
 
 ## @class   AttackRivals
 #  @brief   Décide d'utiliser l'item offensif selon la position des adversaires.

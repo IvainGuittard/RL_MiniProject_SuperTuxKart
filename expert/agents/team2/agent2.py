@@ -1,3 +1,4 @@
+from pathlib import Path
 ## @file    agent2.py
 #  @brief   Agent principal de pilotage automatique du kart (équipe 2).
 #  @author  Équipe 2 DemoPilote: Mariam Abd El Moneim, Sokhna Oumou Diouf, Ayse Koseoglu, Leon Mantani, Selma Moumou et Maty Niang
@@ -18,7 +19,7 @@ from .shield_kart import ActiveShield
 ## @var cfg
 #  @brief Configuration globale chargée depuis configDemoPilote.yaml.
 #         Contient les seuils de virage, les gains de correction et les angles d'items.
-cfg = OmegaConf.load("../agents/team2/configDemoPilote.yaml")
+cfg = OmegaConf.load(Path(__file__).resolve().parent / "configDemoPilote.yaml")
 
 
 ## @class   Agent2
