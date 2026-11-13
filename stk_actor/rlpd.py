@@ -119,6 +119,19 @@ class RLPDConfig(SACConfig):
     # reports the raw env return; Q-values are in scaled units.
     reward_scale: float = 1.0
 
+    # --- warm start ---
+    # Actor weights to start from (e.g. a BC actor), or None for random init.
+    actor_init: str | None = None
+    # Keep the actor (and alpha) fixed for this many env steps, so that the
+    # critics first learn from the warm-started policy's own data instead of
+    # an untrained critic immediately dragging the actor away.
+    actor_freeze_steps: int = 0
+
+    # Include -alpha*log(pi) in the critic target (soft Q). With False the
+    # critic learns Q from env rewards only (RLPD's `backup_entropy` option):
+    # a confident warm-started policy then is not valued at -1000.
+    backup_entropy: bool = True
+
     # TensorBoard logging period for the losses (in env steps)
     log_interval: int = 1_000
 
@@ -158,6 +171,9 @@ def run_rlpd(
     act_dim = env.action_dim
 
     actor = SquashedGaussianActor(obs_dim, cfg.actor_hidden, act_dim)
+    if cfg.actor_init is not None:
+        actor.load_state_dict(torch.load(cfg.actor_init, map_location="cpu"))
+        print(f"Actor warm-started from {cfg.actor_init}")
     critics = EnsembleQNetwork(
         cfg.n_critics, obs_dim, cfg.critic_hidden, act_dim, layer_norm=cfg.use_layer_norm
     )
@@ -191,6 +207,7 @@ def run_rlpd(
     # With a shared STK env, evaluation resets the env under the collector
     eval_shares_env = stk_env is not None
     last_log = 0
+    actor_loss = q_pi = None  # undefined until the first actor update
 
     pbar = tqdm(total=cfg.max_steps)
     while collector.steps < cfg.max_steps:
@@ -219,7 +236,7 @@ def run_rlpd(
                 q_next = targets(batch.next_obs, next_act.value)[z_idx].min(dim=0).values
                 # soft value: V(s') = min_Z Q'(s',ã') - α log π(ã'|s')
                 # the (1-done) mask zeros the full V on terminal transitions
-                v_next = q_next - alpha * next_act.log_prob
+                v_next = q_next - alpha * next_act.log_prob if cfg.backup_entropy else q_next
                 target_q = cfg.reward_scale * batch.reward + cfg.gamma * (~batch.terminated).float() * v_next
 
             # MSE of each critic, summed over the ensemble
@@ -231,7 +248,7 @@ def run_rlpd(
             critic_optimizer.step()
             soft_update(critics, targets, cfg.tau)
 
-            if (i + 1) % utd != 0:
+            if (i + 1) % utd != 0 or collector.steps < cfg.actor_freeze_steps:
                 continue
 
             # --- actor update: mean Q over all E critics (paper line 23) ---
@@ -254,7 +271,8 @@ def run_rlpd(
         if collector.steps - last_log >= cfg.log_interval:
             last_log = collector.steps
             writer.add_scalar("loss/critic", critic_loss.item(), collector.steps)
-            writer.add_scalar("loss/actor", actor_loss.item(), collector.steps)
+            if actor_loss is not None:
+                writer.add_scalar("loss/actor", actor_loss.item(), collector.steps)
             writer.add_scalar("entropy_coef", alpha, collector.steps)
             writer.add_scalar("buffer/online_size", len(online_buffer), collector.steps)
             # Diagnostics: Q on dataset actions vs policy actions (a large
@@ -263,13 +281,14 @@ def run_rlpd(
             # action dimension.
             with torch.no_grad():
                 writer.add_scalar("diag/q_data", q.mean().item(), collector.steps)
-                writer.add_scalar("diag/q_policy", q_pi.mean().item(), collector.steps)
+                if q_pi is not None:
+                    writer.add_scalar("diag/q_policy", q_pi.mean().item(), collector.steps)
                 writer.add_scalar("diag/target", target_q.mean().item(), collector.steps)
                 writer.add_scalar("diag/reward_batch", batch.reward.mean().item(), collector.steps)
                 det = actor.act(online_buffer.sample(n_online).obs)
                 for j, name in enumerate(["accel", "steer"]):
                     writer.add_scalar(f"policy/{name}_mean", det[:, j].mean().item(), collector.steps)
-                for j, name in enumerate(["brake", "drift", "nitro", "rescue"], start=2):
+                for j, name in enumerate(["drift", "nitro"], start=2):
                     writer.add_scalar(f"policy/{name}_on", (det[:, j] > 0).float().mean().item(), collector.steps)
         if result := evaluator.run_if_needed(collector.steps, actor):
             if eval_shares_env:

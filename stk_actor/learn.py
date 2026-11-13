@@ -57,11 +57,11 @@ def _add_expert_args(p: argparse.ArgumentParser) -> None:
                    help="Number of expert transitions to collect")
 
 
-def _evaluator_factory(env, args):
+def _evaluator_factory(env, args, run_dir):
     from .stk_eval import TrackSuiteEvaluator
     return lambda writer: TrackSuiteEvaluator(
         env.flat_env, every=args.eval_every, tracks=args.eval_tracks,
-        seed=args.eval_seed, writer=writer,
+        seed=args.eval_seed, writer=writer, save_dir=run_dir,
     )
 
 
@@ -87,7 +87,7 @@ def cmd_sac(args: argparse.Namespace) -> None:
 
     run_dir = args.run_dir or f"runs/sac-stk-S{args.seed}"
     evaluator = run_sac(cfg, stk_env=env, run_dir=run_dir,
-                        make_evaluator=_evaluator_factory(env, args))
+                        make_evaluator=_evaluator_factory(env, args, run_dir))
     _save_actor(evaluator.best_actor, run_dir, also_submission=not args.no_submit_weights)
 
 
@@ -117,15 +117,20 @@ def cmd_rlpd(args: argparse.Namespace) -> None:
         max_grad_norm=args.max_grad_norm,
         reward_scale=args.reward_scale,
         learning_starts=args.learning_starts,
+        actor_init=args.actor_init,
+        actor_freeze_steps=args.actor_freeze_steps,
+        backup_entropy=not args.no_entropy_backup,
     )
     print(f"UTD ratio = {cfg.updates_per_round / cfg.steps_per_round:g}, "
           f"E={cfg.n_critics}, Z={cfg.critic_subset_size}, tau={cfg.tau}, "
           f"alpha={cfg.entropy_mode}:{cfg.init_entropy_coef}, clip={cfg.max_grad_norm}, "
-          f"reward_scale={cfg.reward_scale}, learning_starts={cfg.learning_starts}")
+          f"reward_scale={cfg.reward_scale}, learning_starts={cfg.learning_starts}, "
+          f"actor_init={cfg.actor_init}, actor_freeze={cfg.actor_freeze_steps}, "
+          f"backup_entropy={cfg.backup_entropy}")
 
     run_dir = args.run_dir or f"runs/rlpd-{args.expert}-S{args.seed}"
     evaluator = run_rlpd(cfg, offline_buffer=offline_buffer, stk_env=env, run_dir=run_dir,
-                         make_evaluator=_evaluator_factory(env, args))
+                         make_evaluator=_evaluator_factory(env, args, run_dir))
     _save_actor(evaluator.best_actor, run_dir, also_submission=not args.no_submit_weights)
 
 
@@ -147,6 +152,11 @@ def cmd_bc(args: argparse.Namespace) -> None:
     env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
     dataset = _get_dataset(env, args)
     obs, target = dataset["obs"], dataset["expert_action"]
+    # Regress the pre-tanh mean onto atanh(target), with targets clipped to
+    # ±target_clip (atanh(0.95) = 1.83). Fitting tanh(mean) to an exact ±1
+    # instead drives the pre-tanh outputs to ±10 (log pi ~ +50), which SAC's
+    # entropy term then punishes heavily when this actor is a warm start.
+    target = torch.atanh(target.clamp(-args.target_clip, args.target_clip))
     n = len(obs)
 
     hidden = SACConfig.actor_hidden
@@ -155,11 +165,11 @@ def cmd_bc(args: argparse.Namespace) -> None:
 
     run_dir = args.run_dir or f"runs/bc-{args.expert}-S{args.seed}"
     writer = SummaryWriter(run_dir)
-    evaluator = _evaluator_factory(env, args)(writer)
+    evaluator = _evaluator_factory(env, args, run_dir)(writer)
 
     for step in tqdm(range(1, args.grad_steps + 1)):
         idx = torch.randint(n, (args.batch_size,))
-        loss = F.mse_loss(actor.act(obs[idx]), target[idx])
+        loss = F.mse_loss(actor.mean_layer(actor.backbone(obs[idx])), target[idx])
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -329,6 +339,12 @@ def main() -> None:
                         help="Multiply rewards in the critic target")
     p_rlpd.add_argument("--learning-starts", type=int, default=256,
                         help="Online transitions collected before the first update")
+    p_rlpd.add_argument("--actor-init", default=None,
+                        help="Warm-start the actor from these weights (e.g. runs/bc-team3-S1/actor.pth)")
+    p_rlpd.add_argument("--actor-freeze-steps", type=int, default=0,
+                        help="Env steps during which only the critics are trained")
+    p_rlpd.add_argument("--no-entropy-backup", action="store_true",
+                        help="Critic target without the entropy term (Q from rewards only)")
 
     p_bc = sub.add_parser("bc", help="Behaviour cloning on the expert data")
     _add_common_args(p_bc)
@@ -336,6 +352,8 @@ def main() -> None:
     p_bc.add_argument("--grad-steps", type=int, default=50_000)
     p_bc.add_argument("--batch-size", type=int, default=256)
     p_bc.add_argument("--lr", type=float, default=3e-4)
+    p_bc.add_argument("--target-clip", type=float, default=0.95,
+                      help="Clip BC targets to ±this (keeps the actor unsaturated)")
     p_bc.set_defaults(eval_every=5_000)
 
     p_dagger = sub.add_parser("dagger", help="Train DAgger with the expert")
