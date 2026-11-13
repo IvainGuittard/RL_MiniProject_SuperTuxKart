@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .sac import SquashedGaussianActor
 from .stk_bridge import (
-    STKVecEnv, collect_expert_dataset, expert_action_to_flat,
+    ACTION_DIM, OBS_DIM, STKVecEnv, collect_expert_dataset, expert_action_to_flat,
     load_dataset, run_expert_lap, save_dataset,
 )
 
