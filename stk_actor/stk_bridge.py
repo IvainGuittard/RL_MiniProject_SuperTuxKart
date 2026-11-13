@@ -128,10 +128,16 @@ def expert_action_to_flat(action: dict) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class STKFlatWrapper(gym.Wrapper):
-    """Flat float32 obs (OBS_DIM,) + ACTION_DIM continuous action on full-v0."""
+    """Flat float32 obs (OBS_DIM,) + ACTION_DIM continuous action on full-v0.
 
-    def __init__(self, env: gym.Env):
+    If ``tracks`` is given, each reset draws its track among them (``None``:
+    the env's own choice, i.e. ``default_track`` or a random track).
+    """
+
+    def __init__(self, env: gym.Env, tracks: list[str] | None = None, seed: int | None = None):
         super().__init__(env)
+        self.tracks = list(tracks) if tracks else None
+        self._track_rng = np.random.default_rng(seed)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32
         )
@@ -150,6 +156,8 @@ class STKFlatWrapper(gym.Wrapper):
         return int(self.env.spec.max_episode_steps)
 
     def reset(self, **kwargs):
+        if self.tracks:
+            self.env.unwrapped.default_track = str(self._track_rng.choice(self.tracks))
         obs, info = self.env.reset(**kwargs)
         self.raw_obs = obs
         return obs_to_flat(obs), info
@@ -160,11 +168,18 @@ class STKFlatWrapper(gym.Wrapper):
         return obs_to_flat(obs), reward, terminated, truncated, info
 
 
-def make_stk_flat_env(track: str | None = None, num_kart: int = 1) -> gym.Env:
-    """Create a flat STK env ready for SAC/RLPD training."""
+def make_stk_flat_env(
+    track: str | list[str] | None = None, num_kart: int = 1, seed: int | None = None
+) -> gym.Env:
+    """Create a flat STK env ready for SAC/RLPD training.
+
+    ``track``: one track, a list of tracks (one drawn at each reset), or
+    ``None`` (a random track among all of them at each reset).
+    """
     import pystk2_gymnasium  # noqa: F401 — registers envs
-    env = gym.make("supertuxkart/full-v0", track=track, num_kart=num_kart, render_mode=None)
-    return STKFlatWrapper(env)
+    tracks = [track] if isinstance(track, str) else track
+    env = gym.make("supertuxkart/full-v0", track=None, num_kart=num_kart, render_mode=None)
+    return STKFlatWrapper(env, tracks=tracks, seed=seed)
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +197,8 @@ class STKVecEnv:
     num_envs: int = 1
     same_step_reset: bool = True
 
-    def __init__(self, track: str | None = None, num_kart: int = 1, seed: int | None = None):
-        self._env = make_stk_flat_env(track=track, num_kart=num_kart)
+    def __init__(self, track: str | list[str] | None = None, num_kart: int = 1, seed: int | None = None):
+        self._env = make_stk_flat_env(track=track, num_kart=num_kart, seed=seed)
         self._seed = seed
         self.observation_space: spaces.Box = self._env.observation_space
         self.action_space: spaces.Box = self._env.action_space
