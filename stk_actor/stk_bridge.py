@@ -24,9 +24,11 @@ Learned action (ACTION_DIM = 4, all in [-1, 1]):
   3  nitro          x > 0 → 1, else 0
 
 brake and rescue are always off for the network (SAC kept pressing them at
-random, which froze the kart). The experts are NOT restricted: they execute
-their own full actions (brake / rescue included, see expert_to_env), and the
-dataset stores the projection of those actions onto the 4 learned dims.
+random, which froze the kart). The expert dataset is collected like DAgger
+runs the expert (dagger.py): the expert's action projected onto the 4
+learned dims is what gets executed, so the offline data contains exactly
+the actions the network can take. Only the reference evaluation of the
+expert (stk_eval.expert_factory, learn compare) uses its full action.
 """
 
 from __future__ import annotations
@@ -139,6 +141,22 @@ class STKFlatWrapper(gym.Wrapper):
             low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32
         )
         self.raw_obs: dict | None = None
+        # Training track pool: when set, every reset draws its track from it
+        # (see set_track_pool). Evaluation disables it while it runs.
+        self.track_pool: tuple[str, ...] | None = None
+        self._track_rng = np.random.default_rng()
+
+    def set_track_pool(self, tracks, seed: int | None = None) -> None:
+        """Restrict the tracks drawn at reset (None = all tracks)."""
+        if tracks:
+            from pystk2_gymnasium.envs import BaseSTKRaceEnv
+            unknown = [t for t in tracks if t not in BaseSTKRaceEnv.TRACKS]
+            if unknown:
+                raise ValueError(f"Unknown tracks {unknown}; available: {BaseSTKRaceEnv.TRACKS}")
+            self.track_pool = tuple(tracks)
+        else:
+            self.track_pool = None
+        self._track_rng = np.random.default_rng(seed)
 
     @property
     def track_length(self) -> float:
@@ -150,6 +168,8 @@ class STKFlatWrapper(gym.Wrapper):
         return int(self.env.spec.max_episode_steps)
 
     def reset(self, **kwargs):
+        if self.track_pool:
+            self.env.unwrapped.default_track = str(self._track_rng.choice(self.track_pool))
         obs, info = self.env.reset(**kwargs)
         self.raw_obs = obs
         return obs_to_flat(obs), info
@@ -182,8 +202,18 @@ class STKVecEnv:
     num_envs: int = 1
     same_step_reset: bool = True
 
-    def __init__(self, track: str | None = None, num_kart: int = 1, seed: int | None = None):
+    def __init__(
+        self,
+        track: str | None = None,
+        num_kart: int = 1,
+        seed: int | None = None,
+        tracks=None,
+    ):
+        """:param tracks: optional pool of training tracks (one drawn per
+            episode); ignored when ``track`` is given."""
         self._env = make_stk_flat_env(track=track, num_kart=num_kart)
+        if tracks and track is None:
+            self._env.set_track_pool(tracks, seed=seed)
         self._seed = seed
         self.observation_space: spaces.Box = self._env.observation_space
         self.action_space: spaces.Box = self._env.action_space
@@ -272,9 +302,9 @@ def collect_expert_dataset(
 
     Two actions are stored for every state:
 
-    - ``action``: the action actually executed (noisy), projected onto the
-      learned dims, which produced ``reward`` / ``next_obs`` (what RLPD's
-      offline buffer needs);
+    - ``action``: the action actually executed (noisy, in the learned
+      dims), which produced ``reward`` / ``next_obs`` (what RLPD's offline
+      buffer needs);
     - ``expert_action``: the clean expert action in that state (the label
       DAgger / behaviour cloning learns from).
 
@@ -295,10 +325,9 @@ def collect_expert_dataset(
         if noise_std > 0:
             action[:2] = np.clip(action[:2] + rng.normal(0.0, noise_std, 2), -1.0, 1.0)
 
-        # The expert's full action is executed (brake / rescue included),
-        # with the noisy acceleration and steering
-        next_obs, reward, terminated, truncated, _ = env.step(
-            expert_to_env(raw, accel=(float(action[0]) + 1.0) / 2.0, steer=float(action[1])))
+        # As in DAgger, the expert's action projected onto the learned dims
+        # is executed (no brake / rescue), with noisy acceleration / steering
+        next_obs, reward, terminated, truncated, _ = env.step(action)
         obs_l.append(obs)
         act_l.append(action)
         exp_l.append(expert_action)

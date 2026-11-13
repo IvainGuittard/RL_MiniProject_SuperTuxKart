@@ -29,7 +29,9 @@ DATA_DIR = Path("data")
 
 
 def _add_common_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--track", default=None, help="Training track (default: random)")
+    p.add_argument("--track", default=None, help="Single training track (default: random)")
+    p.add_argument("--train-tracks", nargs="+", default=None,
+                   help="Pool of training tracks, one drawn per episode (default: all)")
     p.add_argument("--num-kart", type=int, default=1)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-steps", type=int, default=300_000)
@@ -73,7 +75,8 @@ def cmd_sac(args: argparse.Namespace) -> None:
     from .sac import SACConfig, run_sac
     from .stk_bridge import STKVecEnv
 
-    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
+    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed,
+                    tracks=args.train_tracks)
 
     cfg = SACConfig(
         env_name="stk",        # unused when env is passed directly
@@ -98,7 +101,8 @@ def cmd_rlpd(args: argparse.Namespace) -> None:
 
     # Create the training env first — pystk2 is a per-process singleton, so
     # we reuse its flat_env for expert collection rather than opening two instances.
-    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
+    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed,
+                    tracks=args.train_tracks)
     dataset = _get_dataset(env, args)
     offline_buffer = dataset_to_buffer(dataset)
     print(f"Offline buffer ready: {len(offline_buffer)} transitions.")
@@ -116,6 +120,7 @@ def cmd_rlpd(args: argparse.Namespace) -> None:
         init_entropy_coef=args.alpha if args.alpha is not None else args.init_alpha,
         max_grad_norm=args.max_grad_norm,
         reward_scale=args.reward_scale,
+        reward_clip=args.reward_clip if args.reward_clip > 0 else None,
         learning_starts=args.learning_starts,
         actor_init=args.actor_init,
         actor_freeze_steps=args.actor_freeze_steps,
@@ -124,7 +129,7 @@ def cmd_rlpd(args: argparse.Namespace) -> None:
     print(f"UTD ratio = {cfg.updates_per_round / cfg.steps_per_round:g}, "
           f"E={cfg.n_critics}, Z={cfg.critic_subset_size}, tau={cfg.tau}, "
           f"alpha={cfg.entropy_mode}:{cfg.init_entropy_coef}, clip={cfg.max_grad_norm}, "
-          f"reward_scale={cfg.reward_scale}, learning_starts={cfg.learning_starts}, "
+          f"reward_scale={cfg.reward_scale}, reward_clip={cfg.reward_clip}, learning_starts={cfg.learning_starts}, "
           f"actor_init={cfg.actor_init}, actor_freeze={cfg.actor_freeze_steps}, "
           f"backup_entropy={cfg.backup_entropy}")
 
@@ -149,7 +154,8 @@ def cmd_bc(args: argparse.Namespace) -> None:
     from .stk_bridge import STKVecEnv, OBS_DIM
 
     torch.manual_seed(args.seed)
-    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
+    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed,
+                    tracks=args.train_tracks)
     dataset = _get_dataset(env, args)
     obs, target = dataset["obs"], dataset["expert_action"]
     # Regress the pre-tanh mean onto atanh(target), with targets clipped to
@@ -188,7 +194,8 @@ def cmd_dagger(args: argparse.Namespace) -> None:
     from .dagger import DAggerConfig, run_dagger
     from .stk_bridge import STKVecEnv
 
-    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
+    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed,
+                    tracks=args.train_tracks)
     dataset = _get_dataset(env, args)
 
     cfg = DAggerConfig(
@@ -205,7 +212,7 @@ def cmd_dagger(args: argparse.Namespace) -> None:
     run_dir = args.run_dir or f"runs/dagger-{args.expert}-S{args.seed}"
     writer = SummaryWriter(run_dir)
     evaluator = run_dagger(cfg, env.flat_env, dataset, _resolve_expert(args.expert),
-                           writer, _evaluator_factory(env, args)(writer))
+                           writer, _evaluator_factory(env, args, run_dir)(writer))
     writer.close()
     _save_actor(evaluator.best_actor, run_dir, also_submission=not args.no_submit_weights)
 
@@ -250,7 +257,14 @@ def _get_dataset(env, args) -> dict:
         collect_expert_dataset, save_dataset, load_dataset, OBS_DIM, ACTION_DIM,
     )
 
-    path = DATA_DIR / f"{args.expert}-{args.offline_steps}-obs{OBS_DIM}-act{ACTION_DIM}.pt"
+    name = f"{args.expert}-{args.offline_steps}-obs{OBS_DIM}-act{ACTION_DIM}"
+    tracks = getattr(args, "train_tracks", None)
+    if tracks:
+        # The data is collected on the training track pool: one cache per pool
+        import hashlib
+        pool = ",".join(sorted(tracks))
+        name += f"-{len(tracks)}tracks-{hashlib.md5(pool.encode()).hexdigest()[:6]}"
+    path = DATA_DIR / f"{name}.pt"
     if path.exists():
         print(f"Loading expert dataset {path}")
         dataset = load_dataset(path)
@@ -337,6 +351,8 @@ def main() -> None:
     p_rlpd.add_argument("--max-grad-norm", type=float, default=0.5)
     p_rlpd.add_argument("--reward-scale", type=float, default=1.0,
                         help="Multiply rewards in the critic target")
+    p_rlpd.add_argument("--reward-clip", type=float, default=1.0,
+                        help="Cap per-step rewards to ±this (+10 on the finishing step); 0 = off")
     p_rlpd.add_argument("--learning-starts", type=int, default=256,
                         help="Online transitions collected before the first update")
     p_rlpd.add_argument("--actor-init", default=None,

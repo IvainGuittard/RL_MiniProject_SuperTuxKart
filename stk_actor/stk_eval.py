@@ -76,6 +76,8 @@ def run_suite(
     """One deterministic episode per track; restores the env's track setting."""
     unwrapped = env.unwrapped
     saved_track = unwrapped.default_track
+    saved_pool = getattr(env, "track_pool", None)
+    env.track_pool = None  # the evaluation chooses its own tracks
     stats = []
     try:
         for track in tracks:
@@ -91,6 +93,7 @@ def run_suite(
             stats.append(EpisodeStats(track, ret, bool(terminated), steps))
     finally:
         unwrapped.default_track = saved_track
+        env.track_pool = saved_pool
     return stats
 
 
