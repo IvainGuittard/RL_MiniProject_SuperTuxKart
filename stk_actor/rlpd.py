@@ -118,6 +118,11 @@ class RLPDConfig(SACConfig):
     # is ~0.1/step, small next to SAC's entropy bonus). Evaluation still
     # reports the raw env return; Q-values are in scaled units.
     reward_scale: float = 1.0
+    # Cap the per-step reward to [-reward_clip, reward_clip] (+10 allowed on
+    # the terminal step, for the finish bonus). The env sometimes counts a
+    # lap twice or jumps the distance along the track: the team3 dataset has
+    # 120 rewards > 5 (up to 155) while a normal step is ~0.1-0.2. None = off.
+    reward_clip: float | None = 1.0
 
     # --- warm start ---
     # Actor weights to start from (e.g. a BC actor), or None for random init.
@@ -237,7 +242,13 @@ def run_rlpd(
                 # soft value: V(s') = min_Z Q'(s',ã') - α log π(ã'|s')
                 # the (1-done) mask zeros the full V on terminal transitions
                 v_next = q_next - alpha * next_act.log_prob if cfg.backup_entropy else q_next
-                target_q = cfg.reward_scale * batch.reward + cfg.gamma * (~batch.terminated).float() * v_next
+                reward = batch.reward
+                if cfg.reward_clip is not None:
+                    c = cfg.reward_clip
+                    reward = torch.where(
+                        batch.terminated, reward.clamp(-c, c + 10.0), reward.clamp(-c, c)
+                    )
+                target_q = cfg.reward_scale * reward + cfg.gamma * (~batch.terminated).float() * v_next
 
             # MSE of each critic, summed over the ensemble
             q = critics(batch.obs, batch.action.value)
