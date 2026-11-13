@@ -5,6 +5,7 @@ Modes
 sac      — train SAC from scratch on the STK flat env (baseline)
 rlpd     — collect expert data, then train RLPD (SAC + offline expert buffer)
 bc       — behaviour cloning on the same expert data (baseline for RLPD)
+dagger   — DAgger: behaviour cloning + online expert labels (same expert data)
 compare  — evaluate saved actors and the expert on the same track suite
 
 All training modes evaluate on the same fixed suite of tracks with a fixed
@@ -15,6 +16,7 @@ Run from the repository root:
 
     PYTHONPATH=. python -m stk_actor.learn rlpd --expert team3 --utd 10
     PYTHONPATH=. python -m stk_actor.learn bc --expert team3
+    PYTHONPATH=. python -m stk_actor.learn dagger --expert team3
     PYTHONPATH=. python -m stk_actor.learn compare --expert team3 \\
         --runs runs/rlpd-team3-S1 runs/bc-team3-S1
 """
@@ -170,6 +172,34 @@ def cmd_bc(args: argparse.Namespace) -> None:
     _save_actor(evaluator.best_actor, run_dir, also_submission=False)
 
 
+def cmd_dagger(args: argparse.Namespace) -> None:
+    """DAgger on the same cached expert dataset and evaluation suite as RLPD."""
+    from torch.utils.tensorboard import SummaryWriter
+    from .dagger import DAggerConfig, run_dagger
+    from .stk_bridge import STKVecEnv
+
+    env = STKVecEnv(track=args.track, num_kart=args.num_kart, seed=args.seed)
+    dataset = _get_dataset(env, args)
+
+    cfg = DAggerConfig(
+        seed=args.seed,
+        max_steps=args.max_steps,
+        steps_per_iter=args.steps_per_iter,
+        beta0=args.beta0,
+        beta_decay=args.beta_decay,
+        initial_grad_steps=args.initial_grad_steps,
+        grad_steps_per_iter=args.grad_steps_per_iter,
+    )
+    print(cfg)
+
+    run_dir = args.run_dir or f"runs/dagger-{args.expert}-S{args.seed}"
+    writer = SummaryWriter(run_dir)
+    evaluator = run_dagger(cfg, env.flat_env, dataset, _resolve_expert(args.expert),
+                           writer, _evaluator_factory(env, args)(writer))
+    writer.close()
+    _save_actor(evaluator.best_actor, run_dir, also_submission=not args.no_submit_weights)
+
+
 def cmd_compare(args: argparse.Namespace) -> None:
     """Evaluate the expert and each run's actor.pth on the same track suite."""
     import torch
@@ -308,6 +338,19 @@ def main() -> None:
     p_bc.add_argument("--lr", type=float, default=3e-4)
     p_bc.set_defaults(eval_every=5_000)
 
+    p_dagger = sub.add_parser("dagger", help="Train DAgger with the expert")
+    _add_common_args(p_dagger)
+    _add_expert_args(p_dagger)
+    p_dagger.add_argument("--steps-per-iter", type=int, default=2_000,
+                          help="Env steps collected per DAgger iteration")
+    p_dagger.add_argument("--beta0", type=float, default=0.5,
+                          help="Probability of executing the expert action at iteration 1")
+    p_dagger.add_argument("--beta-decay", type=float, default=0.5,
+                          help="beta_i = beta0 * beta_decay ** (i - 1)")
+    p_dagger.add_argument("--initial-grad-steps", type=int, default=5_000,
+                          help="Behaviour cloning steps on the expert data before iteration 1")
+    p_dagger.add_argument("--grad-steps-per-iter", type=int, default=1_000)
+
     p_cmp = sub.add_parser("compare", help="Evaluate the expert and saved actors")
     p_cmp.add_argument("--runs", nargs="+", default=[],
                        help="Run directories (or .pth files) to evaluate")
@@ -317,7 +360,8 @@ def main() -> None:
     _add_eval_args(p_cmp)
 
     args = parser.parse_args()
-    {"sac": cmd_sac, "rlpd": cmd_rlpd, "bc": cmd_bc, "compare": cmd_compare}[args.cmd](args)
+    {"sac": cmd_sac, "rlpd": cmd_rlpd, "bc": cmd_bc, "dagger": cmd_dagger,
+     "compare": cmd_compare}[args.cmd](args)
 
 
 if __name__ == "__main__":

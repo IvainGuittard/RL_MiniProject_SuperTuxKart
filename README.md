@@ -118,10 +118,10 @@ This should create the `pystk_actor.pth` file (**don't change its name**) that c
 To train DAgger : 
 
 ```sh
-uv run python -m stk_actor.dagger --expert team3 --track lighthouse --seed 1
+PYTHONPATH=. uv run python -m stk_actor.learn dagger --expert team3 --seed 1
 ```
 
-The expert dataset is collected once into `data/` (shared with RLPD). The last actor and the TensorBoard logs go to `runs/dagger/<track>/seed<seed>/` (`uv run tensorboard --logdir runs`).
+Same workflow as RLPD: random training track (`--track` to fix one), shared expert dataset in `data/`, evaluation on `--eval-tracks`. The best actor and the TensorBoard logs go to `runs/dagger-<expert>-S<seed>/` (`uv run tensorboard --logdir runs`).
 
 ## Testing the actor
 
