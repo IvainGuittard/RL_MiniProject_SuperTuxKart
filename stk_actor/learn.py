@@ -273,6 +273,7 @@ def _get_dataset(env, args) -> dict:
         dataset = collect_expert_dataset(
             env.flat_env, _resolve_expert(args.expert), n_steps=args.offline_steps
         )
+        dataset["meta"]["tracks"] = args.track  # None = all tracks
         save_dataset(dataset, path)
         print(f"Saved expert dataset → {path}")
     assert dataset["obs"].shape[1] == OBS_DIM, "dataset built with another observation layout"
