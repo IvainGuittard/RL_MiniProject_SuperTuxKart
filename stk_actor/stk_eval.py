@@ -13,6 +13,7 @@ Every evaluation runs one deterministic episode per track with
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
 
@@ -22,7 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from rl_mind.evaluation import EvalResult
 
-from .stk_bridge import STKFlatWrapper, expert_action_to_flat
+from .stk_bridge import STKFlatWrapper, expert_to_env
 
 
 DEFAULT_EVAL_TRACKS = (
@@ -34,7 +35,8 @@ DEFAULT_EVAL_TRACKS = (
 )
 
 # A policy factory is called after each reset (an expert needs the fresh env)
-# and returns ``flat_obs -> ACTION_DIM action in [-1, 1]``.
+# and returns ``flat_obs -> action`` (ACTION_DIM array, or a full STK dict
+# for an expert).
 PolicyFactory = Callable[[STKFlatWrapper], Callable[[np.ndarray], np.ndarray]]
 
 
@@ -58,10 +60,10 @@ def actor_factory(actor) -> PolicyFactory:
 
 
 def expert_factory(expert_cls) -> PolicyFactory:
-    """Rule-based expert, executed in the learner's action space."""
+    """Rule-based expert, executing its own full action."""
     def factory(env):
         expert = expert_cls(env)
-        return lambda obs: expert_action_to_flat(expert.choose_action(env.raw_obs))
+        return lambda obs: expert_to_env(expert.choose_action(env.raw_obs))
     return factory
 
 
@@ -110,12 +112,16 @@ class TrackSuiteEvaluator:
         tracks=DEFAULT_EVAL_TRACKS,
         seed: int = 0,
         writer: SummaryWriter | None = None,
+        save_dir=None,
     ):
         self.env = env
         self.every = every
         self.tracks = tuple(tracks)
         self.seed = seed
         self.writer = writer
+        # If set, <save_dir>/actor.pth (best so far) and actor_last.pth are
+        # written at every evaluation, so a killed run keeps its weights.
+        self.save_dir = Path(save_dir) if save_dir is not None else None
         self.history: list[EvalResult] = []
         self.best_actor = None
         self.best_reward = -float("inf")
@@ -139,6 +145,11 @@ class TrackSuiteEvaluator:
 
         result = EvalResult(step=steps, rewards=rewards, is_best=is_best)
         self.history.append(result)
+        if self.save_dir is not None:
+            self.save_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(actor.state_dict(), self.save_dir / "actor_last.pth")
+            if is_best:
+                torch.save(actor.state_dict(), self.save_dir / "actor.pth")
         if self.writer is not None:
             self.writer.add_scalar("eval/reward", mean, steps)
             self.writer.add_scalar(

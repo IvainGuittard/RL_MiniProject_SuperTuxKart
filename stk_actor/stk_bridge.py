@@ -17,13 +17,16 @@ Observation (flat float32, OBS_DIM = 11 + N_PATHS * 7), kart-centric frame:
 distance_down_track is deliberately left out: absolute progress in metres
 means something different on every track and does not help steering.
 
-Action (ACTION_DIM = 6, all in [-1, 1]):
+Learned action (ACTION_DIM = 4, all in [-1, 1]):
   0  acceleration   mapped to [0, 1] by (x+1)/2
   1  steer          kept in [-1, 1]
-  2  brake          x > 0 → 1, else 0
-  3  drift          x > 0 → 1, else 0
-  4  nitro          x > 0 → 1, else 0
-  5  rescue         x > 0 → 1, else 0
+  2  drift          x > 0 → 1, else 0
+  3  nitro          x > 0 → 1, else 0
+
+brake and rescue are always off for the network (SAC kept pressing them at
+random, which froze the kart). The experts are NOT restricted: they execute
+their own full actions (brake / rescue included, see expert_to_env), and the
+dataset stores the projection of those actions onto the 4 learned dims.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from rl_mind.core import Action
 
 N_PATHS = 5                     # lookahead track nodes
 OBS_DIM = 11 + N_PATHS * 7     # 46 with N_PATHS=5
-ACTION_DIM = 6                 # accel, steer, brake, drift, nitro, rescue
+ACTION_DIM = 4                 # accel, steer, drift, nitro
 
 
 # ---------------------------------------------------------------------------
@@ -70,30 +73,53 @@ def obs_to_flat(obs: dict) -> np.ndarray:
     ])
 
 
-def decode_action(action: np.ndarray) -> dict:
-    """Map an ACTION_DIM float array in [-1, 1] to an STK action dict."""
+def decode_action(action) -> dict:
+    """Map an ACTION_DIM float array in [-1, 1] to an STK action dict.
+
+    A dict (an expert action from expert_to_env) is passed through as-is.
+    """
+    if isinstance(action, dict):
+        return action
     return {
         "acceleration": np.array([(float(action[0]) + 1.0) / 2.0]),
         "steer":        np.array([float(action[1])]),
-        "brake":        int(action[2] > 0),
-        "drift":        int(action[3] > 0),
-        "nitro":        int(action[4] > 0),
-        "rescue":       int(action[5] > 0),
+        "brake":        0,
+        "drift":        int(action[2] > 0),
+        "nitro":        int(action[3] > 0),
+        "rescue":       0,
+        "fire":         0,
+    }
+
+
+def expert_to_env(action: dict, accel: float | None = None, steer: float | None = None) -> dict:
+    """The expert's own full action, as executed in the env (fire off, as
+    before). ``accel`` / ``steer`` override those two values (exploration
+    noise during data collection)."""
+    if accel is None:
+        accel = float(np.clip(np.asarray(action["acceleration"]).flat[0], 0.0, 1.0))
+    if steer is None:
+        steer = float(np.clip(np.asarray(action["steer"]).flat[0], -1.0, 1.0))
+    return {
+        "acceleration": np.array([accel]),
+        "steer":        np.array([steer]),
+        "brake":        int(bool(action.get("brake", False))),
+        "drift":        int(bool(action.get("drift", False))),
+        "nitro":        int(bool(action.get("nitro", False))),
+        "rescue":       int(bool(action.get("rescue", False))),
         "fire":         0,
     }
 
 
 def expert_action_to_flat(action: dict) -> np.ndarray:
-    """Convert an STK dict action to an ACTION_DIM float32 array in [-1, 1]."""
+    """Project an STK dict action onto the ACTION_DIM learned dims, in [-1, 1]
+    (brake / rescue are not part of the learned action)."""
     accel = float(np.clip(np.asarray(action["acceleration"]).flat[0], 0.0, 1.0))
     steer = float(np.clip(np.asarray(action["steer"]).flat[0], -1.0, 1.0))
     return np.array([
         2.0 * accel - 1.0,
         steer,
-        1.0 if action.get("brake", False) else -1.0,
         1.0 if action.get("drift", False) else -1.0,
         1.0 if action.get("nitro", False) else -1.0,
-        1.0 if action.get("rescue", False) else -1.0,
     ], dtype=np.float32)
 
 
@@ -215,17 +241,15 @@ class STKVecEnv:
 def run_expert_lap(env: STKFlatWrapper, expert_cls) -> dict:
     """Run the expert without noise for one episode; return its lap stats.
 
-    The expert executes the same ACTION_DIM actions as the learner (no rescue, no
-    fire), so this is the reference performance of the expert *in the
-    learner's action space* (used to normalise scores).
+    The expert executes its own full action (fire off).
     """
     env.reset()
     expert = expert_cls(env)
     steps, ret, done = 0, 0.0, False
     terminated = False
     while not done:
-        action = expert_action_to_flat(expert.choose_action(env.raw_obs))
-        _, reward, terminated, truncated, _ = env.step(action)
+        _, reward, terminated, truncated, _ = env.step(
+            expert_to_env(expert.choose_action(env.raw_obs)))
         steps += 1
         ret += float(reward)
         done = terminated or truncated
@@ -248,8 +272,9 @@ def collect_expert_dataset(
 
     Two actions are stored for every state:
 
-    - ``action``: the action actually executed (noisy), which produced
-      ``reward`` / ``next_obs`` (what RLPD's offline buffer needs);
+    - ``action``: the action actually executed (noisy), projected onto the
+      learned dims, which produced ``reward`` / ``next_obs`` (what RLPD's
+      offline buffer needs);
     - ``expert_action``: the clean expert action in that state (the label
       DAgger / behaviour cloning learns from).
 
@@ -264,12 +289,16 @@ def collect_expert_dataset(
     expert = expert_cls(env)
     ep_steps, ep_return = 0, 0.0
     for _ in range(n_steps):
-        expert_action = expert_action_to_flat(expert.choose_action(env.raw_obs))
+        raw = expert.choose_action(env.raw_obs)
+        expert_action = expert_action_to_flat(raw)
         action = expert_action.copy()
         if noise_std > 0:
             action[:2] = np.clip(action[:2] + rng.normal(0.0, noise_std, 2), -1.0, 1.0)
 
-        next_obs, reward, terminated, truncated, _ = env.step(action)
+        # The expert's full action is executed (brake / rescue included),
+        # with the noisy acceleration and steering
+        next_obs, reward, terminated, truncated, _ = env.step(
+            expert_to_env(raw, accel=(float(action[0]) + 1.0) / 2.0, steer=float(action[1])))
         obs_l.append(obs)
         act_l.append(action)
         exp_l.append(expert_action)
