@@ -74,6 +74,8 @@ def run_suite(
     """One deterministic episode per track; restores the env's track setting."""
     unwrapped = env.unwrapped
     saved_track = unwrapped.default_track
+    # Disable the training-track draw of STKFlatWrapper during the evaluation
+    saved_tracks, env.tracks = env.tracks, None
     stats = []
     try:
         for track in tracks:
@@ -89,6 +91,7 @@ def run_suite(
             stats.append(EpisodeStats(track, ret, bool(terminated), steps))
     finally:
         unwrapped.default_track = saved_track
+        env.tracks = saved_tracks
     return stats
 
 

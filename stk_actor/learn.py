@@ -29,7 +29,8 @@ DATA_DIR = Path("data")
 
 
 def _add_common_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--track", default=None, help="Training track (default: random)")
+    p.add_argument("--track", nargs="+", default=None,
+                   help="Training track(s), one drawn at each episode (default: all tracks)")
     p.add_argument("--num-kart", type=int, default=1)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-steps", type=int, default=300_000)
@@ -240,7 +241,14 @@ def _get_dataset(env, args) -> dict:
         collect_expert_dataset, save_dataset, load_dataset, OBS_DIM, ACTION_DIM,
     )
 
-    path = DATA_DIR / f"{args.expert}-{args.offline_steps}-obs{OBS_DIM}-act{ACTION_DIM}.pt"
+    name = f"{args.expert}-{args.offline_steps}-obs{OBS_DIM}-act{ACTION_DIM}"
+    if args.track:
+        import hashlib
+        tracks = sorted(args.track)
+        tag = tracks[0] if len(tracks) == 1 else \
+            f"{len(tracks)}tracks-{hashlib.md5(','.join(tracks).encode()).hexdigest()[:8]}"
+        name += f"-{tag}"
+    path = DATA_DIR / f"{name}.pt"
     if path.exists():
         print(f"Loading expert dataset {path}")
         dataset = load_dataset(path)
@@ -249,6 +257,7 @@ def _get_dataset(env, args) -> dict:
         dataset = collect_expert_dataset(
             env.flat_env, _resolve_expert(args.expert), n_steps=args.offline_steps
         )
+        dataset["meta"]["tracks"] = args.track  # None = all tracks
         save_dataset(dataset, path)
         print(f"Saved expert dataset → {path}")
     assert dataset["obs"].shape[1] == OBS_DIM, "dataset built with another observation layout"
