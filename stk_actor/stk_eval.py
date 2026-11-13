@@ -98,9 +98,12 @@ class TrackSuiteEvaluator:
     Keeps ``history``, ``best_actor`` and ``best_reward`` like the original,
     and logs to TensorBoard:
 
-    - ``eval/reward``: mean return over the suite (what best_actor is chosen on)
+    - ``eval/steps``: mean episode length over the suite (what best_actor is
+      chosen on: fewer is better)
+    - ``eval/reward``: mean return over the suite
     - ``eval/finished``: fraction of tracks where the lap was completed
-    - ``eval_track/<track>``: return on each track
+    - ``eval_track/<track>`` and ``eval_steps/<track>``: return and steps on
+      each track
     """
 
     def __init__(
@@ -118,7 +121,8 @@ class TrackSuiteEvaluator:
         self.writer = writer
         self.history: list[EvalResult] = []
         self.best_actor = None
-        self.best_reward = -float("inf")
+        self.best_reward = -float("inf")  # mean return of best_actor (for display)
+        self.best_steps = float("inf")    # selection criterion, see run_if_needed
         self._last_eval_step = 0
 
     def run(self, actor) -> list[EpisodeStats]:
@@ -132,8 +136,11 @@ class TrackSuiteEvaluator:
         stats = self.run(actor)
         rewards = torch.tensor([s.ret for s in stats])
         mean = float(rewards.mean())
-        is_best = mean > self.best_reward
+        # The best actor is the one with the fewest steps per lap on average.
+        mean_steps = float(np.mean([s.steps for s in stats]))
+        is_best = mean_steps < self.best_steps
         if is_best:
+            self.best_steps = mean_steps
             self.best_reward = mean
             self.best_actor = copy.deepcopy(actor)
 
@@ -141,11 +148,13 @@ class TrackSuiteEvaluator:
         self.history.append(result)
         if self.writer is not None:
             self.writer.add_scalar("eval/reward", mean, steps)
+            self.writer.add_scalar("eval/steps", mean_steps, steps)
             self.writer.add_scalar(
                 "eval/finished", float(np.mean([s.finished for s in stats])), steps
             )
             for s in stats:
                 self.writer.add_scalar(f"eval_track/{s.track}", s.ret, steps)
+                self.writer.add_scalar(f"eval_steps/{s.track}", s.steps, steps)
         return result
 
 
