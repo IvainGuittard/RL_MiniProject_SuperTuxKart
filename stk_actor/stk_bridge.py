@@ -133,13 +133,11 @@ class STKFlatWrapper(gym.Wrapper):
     """Flat float32 obs (OBS_DIM,) + ACTION_DIM continuous action on full-v0.
 
     If ``tracks`` is given, each reset draws its track among them (``None``:
-    the env's own choice, i.e. ``default_track`` or a random track).
+    a random track among all of them). See set_track_pool.
     """
 
     def __init__(self, env: gym.Env, tracks: list[str] | None = None, seed: int | None = None):
         super().__init__(env)
-        self.tracks = list(tracks) if tracks else None
-        self._track_rng = np.random.default_rng(seed)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32
         )
@@ -150,7 +148,9 @@ class STKFlatWrapper(gym.Wrapper):
         # Training track pool: when set, every reset draws its track from it
         # (see set_track_pool). Evaluation disables it while it runs.
         self.track_pool: tuple[str, ...] | None = None
-        self._track_rng = np.random.default_rng()
+        self._track_rng = np.random.default_rng(seed)
+        if tracks:
+            self.set_track_pool(tracks, seed=seed)
 
     def set_track_pool(self, tracks, seed: int | None = None) -> None:
         """Restrict the tracks drawn at reset (None = all tracks)."""
@@ -222,11 +222,10 @@ class STKVecEnv:
         seed: int | None = None,
         tracks=None,
     ):
-        """:param tracks: optional pool of training tracks (one drawn per
-            episode); ignored when ``track`` is given."""
-        self._env = make_stk_flat_env(track=track, num_kart=num_kart)
-        if tracks and track is None:
-            self._env.set_track_pool(tracks, seed=seed)
+        """:param track: one track or a list (one drawn per episode).
+        :param tracks: same as a list ``track`` (``--train-tracks``); ignored
+            when ``track`` is given."""
+        self._env = make_stk_flat_env(track=track or tracks, num_kart=num_kart, seed=seed)
         self._seed = seed
         self.observation_space: spaces.Box = self._env.observation_space
         self.action_space: spaces.Box = self._env.action_space
